@@ -1,0 +1,22 @@
+namespace KeywordOcr.App.Services;
+
+public sealed record ListingImageSettings(
+    bool MakeListing = true,
+    int ListingSize = 1200,
+    int ListingPad = 20,
+    int ListingMax = 20,
+    string LogoPath = "",
+    int LogoRatio = 14,
+    int LogoOpacity = 65,
+    string LogoPosition = "tr",
+    bool UseAutoContrast = true,
+    bool UseSharpen = true,
+    bool UseSmallRotate = true,
+    double RotateZoom = 1.04,
+    double UltraAngleDeg = 0.35,
+    double UltraTranslatePx = 0.6,
+    double UltraScalePct = 0.25,
+    int TrimTolerance = 8,
+    int JpegQualityMin = 88,
+    int JpegQualityMax = 92,
+    bool FlipLeftRight = true);

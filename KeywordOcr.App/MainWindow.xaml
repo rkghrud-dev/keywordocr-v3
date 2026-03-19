@@ -1,0 +1,712 @@
+<Window x:Class="KeywordOcr.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="KeywordOCR v3" Width="860" Height="900"
+        WindowStartupLocation="CenterScreen"
+        Background="#F5F5F5">
+
+    <Window.Resources>
+        <Style x:Key="ActionButton" TargetType="Button">
+            <Setter Property="Height" Value="40"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" Background="{TemplateBinding Background}"
+                                CornerRadius="6" Padding="16,0">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Opacity" Value="0.85"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="border" Property="Opacity" Value="0.45"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="SmallButton" TargetType="Button">
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" Background="{TemplateBinding Background}"
+                                CornerRadius="4" Padding="10,0">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Opacity" Value="0.85"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="border" Property="Opacity" Value="0.45"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="SectionLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="#555"/>
+            <Setter Property="Margin" Value="0,0,0,6"/>
+        </Style>
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="#555"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+    </Window.Resources>
+
+    <DockPanel>
+        <!-- ═══ 헤더 ═══ -->
+        <Border DockPanel.Dock="Top" Padding="20,14,20,10" Background="#1a1a2e">
+            <StackPanel>
+                <TextBlock Text="KeywordOCR v3" FontSize="20" FontWeight="Bold" Foreground="White"/>
+                <TextBlock Text="CSV → 전처리/OCR/AI 키워드 → Excel + 대표이미지 → Cafe24 업로드"
+                           FontSize="11" Foreground="#aab" Margin="0,2,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <!-- ═══ 상태바 ═══ -->
+        <Grid DockPanel.Dock="Bottom" Margin="20,4,20,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="StatusText" Grid.Column="0" FontSize="11" Foreground="#888"
+                       VerticalAlignment="Center" Text="대기 중"/>
+            <ProgressBar x:Name="ProgressBar" Grid.Column="1" Width="220" Height="8"
+                         Minimum="0" Maximum="100" Value="0"
+                         Foreground="#1a1a2e" Background="#e0e0e0"/>
+        </Grid>
+
+        <!-- ═══ 로그 ═══ -->
+        <Border DockPanel.Dock="Bottom" Background="White" BorderBrush="#ddd" BorderThickness="1"
+                CornerRadius="6" Margin="20,0,20,0" Height="160">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <Grid Grid.Row="0" Margin="10,6,10,4">
+                    <TextBlock Text="로그" FontSize="11" FontWeight="Bold" Foreground="#888"/>
+                    <Button Content="지우기" HorizontalAlignment="Right" Padding="6,1"
+                            FontSize="10" Background="Transparent" BorderBrush="#ccc" BorderThickness="1"
+                            Cursor="Hand" Click="ClearLog_Click"/>
+                </Grid>
+                <ScrollViewer x:Name="LogScroller" Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                    <TextBlock x:Name="LogBlock" Padding="10,2" FontSize="11"
+                               FontFamily="Consolas, 'D2Coding'" TextWrapping="Wrap"
+                               Foreground="#333"/>
+                </ScrollViewer>
+            </Grid>
+        </Border>
+
+        <!-- ═══ 탭 영역 ═══ -->
+        <TabControl Margin="20,10,20,10" Background="Transparent" BorderBrush="#ddd">
+
+            <!-- ════════════ TAB 1: 실행 ════════════ -->
+            <TabItem Header="  실행  " FontSize="13" FontWeight="SemiBold">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16,12">
+                    <StackPanel>
+
+                        <!-- 파일 드래그 앤 드롭 -->
+                        <TextBlock Style="{StaticResource SectionLabel}" Text="파일 선택"/>
+                        <Border x:Name="DropZone" Background="White" BorderBrush="#ccc"
+                                BorderThickness="2" CornerRadius="8" MinHeight="56" Margin="0,0,0,10"
+                                AllowDrop="True" Drop="DropZone_Drop" DragEnter="DropZone_DragEnter"
+                                DragLeave="DropZone_DragLeave">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="14,10">
+                                    <TextBlock x:Name="DropZoneText"
+                                               Text="CSV / Excel 파일을 여기에 드래그하거나 [파일 선택] 클릭"
+                                               FontSize="12" Foreground="#888"/>
+                                    <TextBlock x:Name="DropZoneFile" Text="" FontSize="11" Foreground="#1a1a2e"
+                                               FontWeight="SemiBold" Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/>
+                                </StackPanel>
+                                <Button Grid.Column="1" Content="파일 선택" Width="90" Height="34" Margin="0,0,10,0"
+                                        Background="#e0e0e0" Foreground="#333" FontSize="12"
+                                        Style="{StaticResource SmallButton}" Click="SelectFile_Click"/>
+                            </Grid>
+                        </Border>
+
+                        <!-- 상품코드 선택 -->
+                        <Border x:Name="ProductListPanel" Background="White" BorderBrush="#ddd"
+                                BorderThickness="1" CornerRadius="6" Margin="0,0,0,10"
+                                Visibility="Collapsed" MaxHeight="180">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <Grid Grid.Row="0" Margin="10,6,10,4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="처리할 상품 선택" FontSize="11" FontWeight="Bold"
+                                               Foreground="#555" VerticalAlignment="Center"/>
+                                    <TextBlock x:Name="ProductCountText" Grid.Column="1" FontSize="11" Foreground="#888"
+                                               VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                    <Button Grid.Column="2" Content="전체선택" FontSize="10" Padding="6,2" Margin="0,0,4,0"
+                                            Background="Transparent" BorderBrush="#ccc" BorderThickness="1"
+                                            Cursor="Hand" Click="SelectAll_Click"/>
+                                    <Button Grid.Column="3" Content="전체해제" FontSize="10" Padding="6,2"
+                                            Background="Transparent" BorderBrush="#ccc" BorderThickness="1"
+                                            Cursor="Hand" Click="DeselectAll_Click"/>
+                                </Grid>
+                                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="6,0,6,6">
+                                    <ItemsControl x:Name="ProductList">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <CheckBox IsChecked="{Binding IsSelected}" Margin="4,2" FontSize="11"
+                                                          Checked="ProductCheck_Changed" Unchecked="ProductCheck_Changed">
+                                                    <CheckBox.Content>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding Code}" FontWeight="SemiBold"
+                                                                       Foreground="#1a1a2e" Width="90"/>
+                                                            <TextBlock Text="{Binding Name}" Foreground="#555"
+                                                                       TextTrimming="CharacterEllipsis" MaxWidth="500"/>
+                                                        </StackPanel>
+                                                    </CheckBox.Content>
+                                                </CheckBox>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </Grid>
+                        </Border>
+
+                        <!-- 옵션 -->
+                        <TextBlock Style="{StaticResource SectionLabel}" Text="옵션" Margin="0,4,0,6"/>
+                        <Grid Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="20"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <CheckBox x:Name="MakeListingCheck" Grid.Column="0" Content="대표이미지 생성 포함"
+                                      IsChecked="True" FontSize="12" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="2" Text="AI 모델:" FontSize="12" Foreground="#555"
+                                       VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <ComboBox x:Name="ModelCombo" Grid.Column="3" Width="200" Height="28" FontSize="11">
+                                <ComboBoxItem Content="claude-sonnet-4-6"/>
+                                <ComboBoxItem Content="claude-haiku-4-5-20251001" IsSelected="True"/>
+                                <ComboBoxItem Content="claude-opus-4-6"/>
+                                <ComboBoxItem Content="gpt-4.1"/>
+                                <ComboBoxItem Content="gpt-4.1-mini"/>
+                            </ComboBox>
+                        </Grid>
+
+                        <!-- 실행 버튼 -->
+                        <TextBlock Style="{StaticResource SectionLabel}" Text="실행"/>
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="8"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="RunPipelineButton" Grid.Column="0"
+                                    Content="전체 실행 (전처리+OCR+키워드+이미지)"
+                                    Background="#1a1a2e" Foreground="White"
+                                    Style="{StaticResource ActionButton}"
+                                    Click="RunPipeline_Click" IsEnabled="False"/>
+                            <Button x:Name="RunKeywordOnlyButton" Grid.Column="2"
+                                    Content="키워드만 생성 (OCR결과 재사용)"
+                                    Background="#457b9d" Foreground="White"
+                                    Style="{StaticResource ActionButton}"
+                                    Click="RunKeywordOnly_Click" IsEnabled="False"/>
+                        </Grid>
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="8"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="RunListingOnlyButton" Grid.Column="0"
+                                    Content="대표이미지만 생성"
+                                    Background="#2d6a4f" Foreground="White"
+                                    Style="{StaticResource ActionButton}"
+                                    Click="RunListingOnly_Click" IsEnabled="False"/>
+                            <Button x:Name="OpenOutputFolderButton" Grid.Column="2"
+                                    Content="결과 폴더 열기"
+                                    Background="#e0e0e0" Foreground="#333"
+                                    Style="{StaticResource ActionButton}"
+                                    Click="OpenOutputFolder_Click" IsEnabled="False"/>
+                        </Grid>
+
+                        <!-- 결과 파일 -->
+                        <Border Background="#f8f9fa" CornerRadius="6" Padding="12,8" Margin="0,8,0,0"
+                                BorderBrush="#eee" BorderThickness="1">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="OutputFileText" Grid.Column="0" Text="결과 파일 없음"
+                                           FontSize="11" Foreground="#888" VerticalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis"/>
+                                <Button x:Name="OpenUploadExcelButton" Grid.Column="1"
+                                        Content="업로드용 엑셀 열기" Width="120" Height="28"
+                                        Background="#2d6a4f" Foreground="White" FontSize="11"
+                                        Style="{StaticResource SmallButton}"
+                                        Click="OpenUploadExcel_Click" IsEnabled="False"/>
+                            </Grid>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ════════════ TAB 2: Cafe24 업로드 ════════════ -->
+            <TabItem Header="  Cafe24 업로드  " FontSize="13" FontWeight="SemiBold">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16,12">
+                    <StackPanel>
+
+                        <TextBlock Style="{StaticResource SectionLabel}" Text="업로드 설정"/>
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="20"/>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="32"/>
+                                <RowDefinition Height="32"/>
+                                <RowDefinition Height="32"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="날짜태그"/>
+                            <TextBox x:Name="Cafe24DateTag" Grid.Row="0" Grid.Column="1" Height="26" FontSize="11"
+                                     VerticalContentAlignment="Center" Padding="6,0"/>
+                            <TextBlock Grid.Row="0" Grid.Column="3" Style="{StaticResource FieldLabel}" Text="매칭모드"/>
+                            <ComboBox x:Name="Cafe24MatchMode" Grid.Row="0" Grid.Column="4" Height="26" FontSize="11">
+                                <ComboBoxItem Content="PREFIX" IsSelected="True"/>
+                                <ComboBoxItem Content="CONTAINS"/>
+                                <ComboBoxItem Content="EXACT"/>
+                            </ComboBox>
+
+                            <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="대표이미지"/>
+                            <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal">
+                                <TextBlock Text="인덱스:" FontSize="11" Foreground="#888" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBox x:Name="Cafe24MainIdx" Width="40" Height="24" FontSize="11"
+                                         VerticalContentAlignment="Center" Text="2" TextAlignment="Center"/>
+                            </StackPanel>
+                            <TextBlock Grid.Row="1" Grid.Column="3" Style="{StaticResource FieldLabel}" Text="추가이미지"/>
+                            <StackPanel Grid.Row="1" Grid.Column="4" Orientation="Horizontal">
+                                <TextBlock Text="시작:" FontSize="11" Foreground="#888" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBox x:Name="Cafe24AddStart" Width="40" Height="24" FontSize="11"
+                                         VerticalContentAlignment="Center" Text="3" TextAlignment="Center"/>
+                                <TextBlock Text="최대:" FontSize="11" Foreground="#888" VerticalAlignment="Center" Margin="10,0,4,0"/>
+                                <TextBox x:Name="Cafe24AddMax" Width="40" Height="24" FontSize="11"
+                                         VerticalContentAlignment="Center" Text="10" TextAlignment="Center"/>
+                            </StackPanel>
+
+                            <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="재시도"/>
+                            <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal">
+                                <TextBox x:Name="Cafe24RetryCount" Width="40" Height="24" FontSize="11"
+                                         VerticalContentAlignment="Center" Text="1" TextAlignment="Center"/>
+                                <TextBlock Text="회 / 간격" FontSize="11" Foreground="#888" VerticalAlignment="Center" Margin="4,0,4,0"/>
+                                <TextBox x:Name="Cafe24RetryDelay" Width="40" Height="24" FontSize="11"
+                                         VerticalContentAlignment="Center" Text="1.0" TextAlignment="Center"/>
+                                <TextBlock Text="초" FontSize="11" Foreground="#888" VerticalAlignment="Center" Margin="4,0,0,0"/>
+                            </StackPanel>
+                            <TextBlock Grid.Row="2" Grid.Column="3" Style="{StaticResource FieldLabel}" Text="PREFIX"/>
+                            <StackPanel Grid.Row="2" Grid.Column="4" Orientation="Horizontal">
+                                <TextBox x:Name="Cafe24MatchPrefix" Width="40" Height="24" FontSize="11"
+                                         VerticalContentAlignment="Center" Text="20" TextAlignment="Center"/>
+                                <TextBlock Text="글자" FontSize="11" Foreground="#888" VerticalAlignment="Center" Margin="4,0,0,0"/>
+                            </StackPanel>
+                        </Grid>
+
+                        <!-- 업로드 실행 -->
+                        <TextBlock Style="{StaticResource SectionLabel}" Text="실행" Margin="0,4,0,6"/>
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="8"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="Cafe24UploadButton" Grid.Column="0"
+                                    Content="Cafe24 이미지 + 가격 업로드"
+                                    Background="#c44536" Foreground="White"
+                                    Style="{StaticResource ActionButton}"
+                                    Click="Cafe24Upload_Click" IsEnabled="False"/>
+                            <Button x:Name="Cafe24CreateButton" Grid.Column="2"
+                                    Content="Cafe24 신규상품 등록"
+                                    Background="#e76f51" Foreground="White"
+                                    Style="{StaticResource ActionButton}"
+                                    Click="Cafe24Create_Click" IsEnabled="False"/>
+                        </Grid>
+
+                        <!-- 업로드 결과 -->
+                        <TextBlock Style="{StaticResource SectionLabel}" Text="업로드 결과" Margin="0,4,0,6"/>
+                        <Border Background="White" BorderBrush="#ddd" BorderThickness="1" CornerRadius="6">
+                            <DataGrid x:Name="UploadResultGrid" AutoGenerateColumns="False"
+                                      HeadersVisibility="Column" IsReadOnly="True"
+                                      GridLinesVisibility="Horizontal" BorderThickness="0"
+                                      FontSize="11" MinHeight="100" MaxHeight="250"
+                                      CanUserSortColumns="True">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="GS코드" Binding="{Binding Gs}" Width="100"/>
+                                    <DataGridTextColumn Header="상품번호" Binding="{Binding ProductNo}" Width="80"/>
+                                    <DataGridTextColumn Header="상태" Binding="{Binding Status}" Width="80"/>
+                                    <DataGridTextColumn Header="대표이미지" Binding="{Binding MainImage}" Width="120"/>
+                                    <DataGridTextColumn Header="추가" Binding="{Binding AddCount}" Width="50"/>
+                                    <DataGridTextColumn Header="가격" Binding="{Binding PriceStatus}" Width="*"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Border>
+
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="UploadSummaryText" Grid.Column="0" FontSize="11"
+                                       Foreground="#888" VerticalAlignment="Center"/>
+                            <Button x:Name="OpenUploadLogButton" Grid.Column="1"
+                                    Content="업로드 로그 열기" Width="120" Height="28"
+                                    Background="#457b9d" Foreground="White" FontSize="11"
+                                    Style="{StaticResource SmallButton}"
+                                    Click="OpenUploadLog_Click" IsEnabled="False"/>
+                        </Grid>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ════════════ TAB 3: 옵션 가격 ════════════ -->
+            <TabItem Header="  옵션 가격  " FontSize="13" FontWeight="SemiBold">
+                <Grid Margin="16,12">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Style="{StaticResource SectionLabel}" Text="옵션 가격 확인 / 수정"/>
+                    <Grid Grid.Row="1" Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0" Content="GPT 파일 불러오기" Width="140" Height="30"
+                                Background="#1a1a2e" Foreground="White" FontSize="11"
+                                Style="{StaticResource SmallButton}"
+                                Click="LoadPriceData_Click"/>
+                        <TextBlock x:Name="PriceFileText" Grid.Column="1" FontSize="11" Foreground="#888"
+                                   VerticalAlignment="Center" Margin="10,0,0,0" TextTrimming="CharacterEllipsis"/>
+                        <Button Grid.Column="2" Content="가격 재계산" Width="90" Height="30" Margin="0,0,4,0"
+                                Background="#457b9d" Foreground="White" FontSize="11"
+                                Style="{StaticResource SmallButton}"
+                                Click="RecalcPrices_Click"/>
+                        <Button Grid.Column="3" Content="저장" Width="60" Height="30"
+                                Background="#2d6a4f" Foreground="White" FontSize="11"
+                                Style="{StaticResource SmallButton}"
+                                Click="SavePriceData_Click"/>
+                    </Grid>
+
+                    <Border Grid.Row="2" Background="White" BorderBrush="#ddd" BorderThickness="1" CornerRadius="6">
+                        <DataGrid x:Name="PriceGrid" AutoGenerateColumns="False"
+                                  HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                                  BorderThickness="0" FontSize="11"
+                                  CanUserSortColumns="True" CanUserAddRows="False">
+                            <DataGrid.Columns>
+                                <DataGridCheckBoxColumn Header="" Binding="{Binding IsChecked, UpdateSourceTrigger=PropertyChanged}" Width="30"/>
+                                <DataGridTextColumn Header="GS코드" Binding="{Binding GsCode}" Width="100" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="옵션명" Binding="{Binding OptionName}" Width="*" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="공급가" Binding="{Binding SupplyPrice, StringFormat=N0}" Width="80" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="판매가" Binding="{Binding SellingPrice, StringFormat=N0}" Width="80" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="추가금액" Binding="{Binding AdditionalAmount, StringFormat=N0}" Width="80"/>
+                                <DataGridTextColumn Header="소비자가" Binding="{Binding ConsumerPrice, StringFormat=N0}" Width="80" IsReadOnly="True"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Border>
+
+                    <Grid Grid.Row="3" Margin="0,8,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Orientation="Horizontal">
+                            <Button Content="전체선택" FontSize="10" Padding="6,2" Margin="0,0,4,0"
+                                    Background="Transparent" BorderBrush="#ccc" BorderThickness="1"
+                                    Cursor="Hand" Click="PriceSelectAll_Click"/>
+                            <Button Content="전체해제" FontSize="10" Padding="6,2"
+                                    Background="Transparent" BorderBrush="#ccc" BorderThickness="1"
+                                    Cursor="Hand" Click="PriceDeselectAll_Click"/>
+                        </StackPanel>
+                        <TextBlock x:Name="PriceSummaryText" Grid.Column="2" FontSize="11" Foreground="#888"
+                                   VerticalAlignment="Center"/>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <!-- ════════════ TAB 4: 실행 이력 ════════════ -->
+            <TabItem Header="  실행 이력  " FontSize="13" FontWeight="SemiBold">
+                <Grid Margin="16,12">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Style="{StaticResource SectionLabel}"
+                                   Text="파이프라인 실행 이력" VerticalAlignment="Center"/>
+                        <Button Grid.Column="2" Content="새로고침" Width="70" Height="28"
+                                Background="#e0e0e0" Foreground="#333" FontSize="11"
+                                Style="{StaticResource SmallButton}"
+                                Click="RefreshHistory_Click"/>
+                    </Grid>
+
+                    <Border Grid.Row="1" Background="White" BorderBrush="#ddd" BorderThickness="1" CornerRadius="6">
+                        <DataGrid x:Name="HistoryGrid" AutoGenerateColumns="False"
+                                  HeadersVisibility="Column" IsReadOnly="True"
+                                  GridLinesVisibility="Horizontal" BorderThickness="0"
+                                  FontSize="11" SelectionMode="Single"
+                                  CanUserSortColumns="True"
+                                  MouseDoubleClick="HistoryGrid_DoubleClick">
+                            <DataGrid.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem Header="결과 불러오기" FontWeight="SemiBold" Click="HistoryLoad_Click"/>
+                                    <Separator/>
+                                    <MenuItem Header="Cafe24 상품 엑셀 업로드 (브라우저)" Click="HistoryOpenCafe24Excel_Click"/>
+                                    <MenuItem Header="Cafe24 이미지+가격 업로드 (API)" Click="HistoryCafe24Upload_Click"/>
+                                    <MenuItem Header="Cafe24 신규상품 등록 (API)" Click="HistoryCafe24Create_Click"/>
+                                    <Separator/>
+                                    <MenuItem Header="업로드용 엑셀 열기" Click="HistoryOpenExcel_Click"/>
+                                    <MenuItem Header="결과 폴더 열기" Click="HistoryOpenFolder_Click"/>
+                                    <MenuItem Header="엑셀 경로 복사" Click="HistoryCopyPath_Click"/>
+                                    <Separator/>
+                                    <MenuItem Header="메모 수정" Click="HistoryEditMemo_Click"/>
+                                    <MenuItem Header="이력 복제" Click="HistoryCopy_Click"/>
+                                    <MenuItem Header="삭제" Foreground="#c44536" Click="HistoryDelete_Click"/>
+                                </ContextMenu>
+                            </DataGrid.ContextMenu>
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="일시" Binding="{Binding DisplayTime}" Width="90"/>
+                                <DataGridTextColumn Header="파일" Binding="{Binding DisplaySource}" Width="160"/>
+                                <DataGridTextColumn Header="요약" Binding="{Binding DisplaySummary}" Width="*"/>
+                                <DataGridTextColumn Header="상태" Binding="{Binding Status}" Width="60"/>
+                                <DataGridTextColumn Header="메모" Binding="{Binding Memo}" Width="120"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Border>
+
+                    <Grid Grid.Row="2" Margin="0,8,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="4"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="4"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="4"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0" Content="결과 불러오기" Width="100" Height="32"
+                                Background="#1a1a2e" Foreground="White" FontSize="11"
+                                Style="{StaticResource SmallButton}"
+                                Click="HistoryLoad_Click"/>
+                        <Button Grid.Column="2" Content="폴더 열기" Width="80" Height="32"
+                                Background="#457b9d" Foreground="White" FontSize="11"
+                                Style="{StaticResource SmallButton}"
+                                Click="HistoryOpenFolder_Click"/>
+                        <Button Grid.Column="4" Content="복사" Width="60" Height="32"
+                                Background="#2d6a4f" Foreground="White" FontSize="11"
+                                Style="{StaticResource SmallButton}"
+                                Click="HistoryCopy_Click"/>
+                        <Button Grid.Column="6" Content="메모 수정" Width="80" Height="32"
+                                Background="#e0e0e0" Foreground="#333" FontSize="11"
+                                Style="{StaticResource SmallButton}"
+                                Click="HistoryEditMemo_Click"/>
+                        <Button Grid.Column="8" Content="삭제" Width="60" Height="32"
+                                Background="#c44536" Foreground="White" FontSize="11"
+                                Style="{StaticResource SmallButton}"
+                                Click="HistoryDelete_Click"/>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <!-- ════════════ TAB 5: 설정 ════════════ -->
+            <TabItem Header="  설정  " FontSize="13" FontWeight="SemiBold">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16,12">
+                    <StackPanel>
+
+                        <!-- 대표이미지 설정 -->
+                        <TextBlock Style="{StaticResource SectionLabel}" Text="대표이미지 설정"/>
+                        <Border Background="White" BorderBrush="#eee" BorderThickness="1" CornerRadius="6"
+                                Padding="14,10" Margin="0,0,0,14">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="90"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="90"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="28"/>
+                                    <RowDefinition Height="28"/>
+                                    <RowDefinition Height="28"/>
+                                    <RowDefinition Height="28"/>
+                                    <RowDefinition Height="28"/>
+                                </Grid.RowDefinitions>
+
+                                <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="로고 경로"/>
+                                <Grid Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="SettingsLogoPath" Grid.Column="0" Height="24" FontSize="11"
+                                             VerticalContentAlignment="Center" Padding="4,0"/>
+                                    <Button Grid.Column="1" Content="..." Width="30" Height="24" Margin="4,0,0,0"
+                                            Background="#e0e0e0" FontSize="11" Cursor="Hand"
+                                            Click="BrowseLogoPath_Click"/>
+                                </Grid>
+
+                                <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="로고 비율(%)"/>
+                                <TextBox x:Name="SettingsLogoRatio" Grid.Row="1" Grid.Column="1" Width="50"
+                                         Height="22" FontSize="11" Text="14" TextAlignment="Center"
+                                         VerticalContentAlignment="Center" HorizontalAlignment="Left"/>
+                                <TextBlock Grid.Row="1" Grid.Column="3" Style="{StaticResource FieldLabel}" Text="로고 투명도"/>
+                                <TextBox x:Name="SettingsLogoOpacity" Grid.Row="1" Grid.Column="4" Width="50"
+                                         Height="22" FontSize="11" Text="65" TextAlignment="Center"
+                                         VerticalContentAlignment="Center" HorizontalAlignment="Left"/>
+
+                                <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="로고 위치"/>
+                                <ComboBox x:Name="SettingsLogoPos" Grid.Row="2" Grid.Column="1" Width="70"
+                                          Height="22" FontSize="11" HorizontalAlignment="Left">
+                                    <ComboBoxItem Content="tr" IsSelected="True"/>
+                                    <ComboBoxItem Content="tl"/>
+                                    <ComboBoxItem Content="br"/>
+                                    <ComboBoxItem Content="bl"/>
+                                </ComboBox>
+                                <TextBlock Grid.Row="2" Grid.Column="3" Style="{StaticResource FieldLabel}" Text="이미지 크기"/>
+                                <TextBox x:Name="SettingsListingSize" Grid.Row="2" Grid.Column="4" Width="60"
+                                         Height="22" FontSize="11" Text="1200" TextAlignment="Center"
+                                         VerticalContentAlignment="Center" HorizontalAlignment="Left"/>
+
+                                <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="JPEG 품질"/>
+                                <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal">
+                                    <TextBox x:Name="SettingsJpegMin" Width="40" Height="22" FontSize="11"
+                                             Text="88" TextAlignment="Center" VerticalContentAlignment="Center"/>
+                                    <TextBlock Text=" ~ " FontSize="11" Foreground="#888" VerticalAlignment="Center"/>
+                                    <TextBox x:Name="SettingsJpegMax" Width="40" Height="22" FontSize="11"
+                                             Text="92" TextAlignment="Center" VerticalContentAlignment="Center"/>
+                                </StackPanel>
+                                <TextBlock Grid.Row="3" Grid.Column="3" Style="{StaticResource FieldLabel}" Text="회전 줌"/>
+                                <TextBox x:Name="SettingsRotateZoom" Grid.Row="3" Grid.Column="4" Width="60"
+                                         Height="22" FontSize="11" Text="1.04" TextAlignment="Center"
+                                         VerticalContentAlignment="Center" HorizontalAlignment="Left"/>
+
+                                <StackPanel Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="5" Orientation="Horizontal">
+                                    <CheckBox x:Name="SettingsAutoContrast" Content="자동대비" IsChecked="True"
+                                              FontSize="11" Margin="0,0,12,0"/>
+                                    <CheckBox x:Name="SettingsSharpen" Content="샤프닝" IsChecked="True"
+                                              FontSize="11" Margin="0,0,12,0"/>
+                                    <CheckBox x:Name="SettingsSmallRotate" Content="미세회전" IsChecked="True"
+                                              FontSize="11" Margin="0,0,12,0"/>
+                                    <CheckBox x:Name="SettingsFlipLR" Content="좌우반전" IsChecked="True"
+                                              FontSize="11"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- Cafe24 토큰 설정 -->
+                        <TextBlock Style="{StaticResource SectionLabel}" Text="Cafe24 연결"/>
+                        <Border Background="White" BorderBrush="#eee" BorderThickness="1" CornerRadius="6"
+                                Padding="14,10" Margin="0,0,0,14">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="90"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="28"/>
+                                    <RowDefinition Height="28"/>
+                                    <RowDefinition Height="28"/>
+                                </Grid.RowDefinitions>
+
+                                <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="토큰 파일"/>
+                                <TextBox x:Name="SettingsTokenPath" Grid.Row="0" Grid.Column="1" Height="24"
+                                         FontSize="11" VerticalContentAlignment="Center" Padding="4,0"/>
+                                <Button Grid.Row="0" Grid.Column="2" Content="..." Width="30" Height="24"
+                                        Margin="4,0,0,0" Background="#e0e0e0" FontSize="11" Cursor="Hand"
+                                        Click="BrowseTokenPath_Click"/>
+
+                                <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="Mall ID"/>
+                                <TextBlock x:Name="SettingsMallId" Grid.Row="1" Grid.Column="1" FontSize="11"
+                                           Foreground="#1a1a2e" VerticalAlignment="Center"/>
+
+                                <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="토큰 상태"/>
+                                <TextBlock x:Name="SettingsTokenStatus" Grid.Row="2" Grid.Column="1" FontSize="11"
+                                           Foreground="#888" VerticalAlignment="Center"/>
+                                <Button Grid.Row="2" Grid.Column="2" Content="토큰 갱신" Width="80" Height="24"
+                                        Background="#c44536" Foreground="White" FontSize="11"
+                                        Style="{StaticResource SmallButton}"
+                                        Click="RefreshToken_Click"/>
+                            </Grid>
+                        </Border>
+
+                        <!-- 경로 설정 -->
+                        <TextBlock Style="{StaticResource SectionLabel}" Text="경로"/>
+                        <Border Background="White" BorderBrush="#eee" BorderThickness="1" CornerRadius="6"
+                                Padding="14,10" Margin="0,0,0,14">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="90"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="28"/>
+                                    <RowDefinition Height="28"/>
+                                </Grid.RowDefinitions>
+
+                                <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="Python 루트"/>
+                                <TextBlock x:Name="SettingsLegacyRoot" Grid.Row="0" Grid.Column="1" FontSize="11"
+                                           Foreground="#555" VerticalAlignment="Center"/>
+
+                                <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="v3 루트"/>
+                                <TextBlock x:Name="SettingsV3Root" Grid.Row="1" Grid.Column="1" FontSize="11"
+                                           Foreground="#555" VerticalAlignment="Center"/>
+                            </Grid>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
+    </DockPanel>
+</Window>
