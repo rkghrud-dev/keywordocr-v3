@@ -14,10 +14,97 @@ namespace KeywordOcr.App.Services;
 
 internal sealed class Cafe24ApiClient
 {
+    private const string DefaultOAuthScope = "mall.read_order,mall.write_order,mall.read_shipping,mall.write_shipping,mall.read_product,mall.write_product";
+
     private readonly HttpClient _httpClient = new()
     {
         Timeout = TimeSpan.FromSeconds(60)
     };
+
+    public string BuildAuthorizeUrl(Cafe24TokenConfig config, string state = "keywordocr")
+    {
+        if (string.IsNullOrWhiteSpace(config.MallId)
+            || string.IsNullOrWhiteSpace(config.ClientId)
+            || string.IsNullOrWhiteSpace(config.RedirectUri))
+        {
+            throw new InvalidDataException("Cafe24 다시 인증에 필요한 MALL_ID / CLIENT_ID / REDIRECT_URI 설정이 없습니다.");
+        }
+
+        var query = new Dictionary<string, string>
+        {
+            ["response_type"] = "code",
+            ["client_id"] = config.ClientId,
+            ["redirect_uri"] = config.RedirectUri,
+            ["scope"] = string.IsNullOrWhiteSpace(config.Scope) ? DefaultOAuthScope : config.Scope,
+            ["state"] = string.IsNullOrWhiteSpace(state) ? "keywordocr" : state
+        };
+
+        return $"https://{config.MallId}.cafe24api.com/api/v2/oauth/authorize?{BuildQueryString(query)}";
+    }
+
+    public async Task ExchangeAuthorizationCodeAsync(Cafe24TokenConfig config, string authorizationCode, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(authorizationCode))
+        {
+            throw new InvalidDataException("Cafe24 authorization code가 비어 있습니다.");
+        }
+
+        if (string.IsNullOrWhiteSpace(config.MallId)
+            || string.IsNullOrWhiteSpace(config.ClientId)
+            || string.IsNullOrWhiteSpace(config.ClientSecret)
+            || string.IsNullOrWhiteSpace(config.RedirectUri))
+        {
+            throw new InvalidDataException("Cafe24 다시 인증에 필요한 MALL_ID / CLIENT_ID / CLIENT_SECRET / REDIRECT_URI 설정이 없습니다.");
+        }
+
+        var url = $"https://{config.MallId}.cafe24api.com/api/v2/oauth/token";
+        using var request = new HttpRequestMessage(HttpMethod.Post, url);
+        var basicToken = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{config.ClientId}:{config.ClientSecret}"));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Basic", basicToken);
+        request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["grant_type"] = "authorization_code",
+            ["code"] = authorizationCode,
+            ["redirect_uri"] = config.RedirectUri
+        });
+
+        try
+        {
+            using var document = await SendJsonAsync(request, cancellationToken, treatUnauthorizedAsTokenExpired: false);
+            config.AccessToken = GetString(document.RootElement, "access_token");
+            var refreshToken = GetString(document.RootElement, "refresh_token");
+            if (!string.IsNullOrWhiteSpace(refreshToken))
+            {
+                config.RefreshToken = refreshToken;
+            }
+
+            if (string.IsNullOrWhiteSpace(config.AccessToken))
+            {
+                throw new InvalidDataException("Cafe24 다시 인증 응답에서 ACCESS_TOKEN을 받지 못했습니다.");
+            }
+        }
+        catch (HttpRequestException ex) when (IsAuthorizationCodeError(ex.Message))
+        {
+            throw new InvalidDataException("Cafe24 다시 인증 실패: callback URL 또는 code 값을 새로 받아 다시 입력해 주세요.", ex);
+        }
+        catch (HttpRequestException ex) when (IsCredentialError(ex.Message))
+        {
+            throw new InvalidDataException("Cafe24 다시 인증 실패: CLIENT_ID / CLIENT_SECRET 값을 확인해 주세요.", ex);
+        }
+    }
+
+    public static string ExtractAuthorizationCode(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return string.Empty;
+        }
+
+        var code = ExtractQueryValue(input, "code");
+        return string.IsNullOrWhiteSpace(code)
+            ? input.Trim()
+            : code.Trim();
+    }
 
     public async Task<List<Cafe24Product>> GetProductsAsync(Cafe24TokenConfig config, bool onlySelling, CancellationToken cancellationToken)
     {
@@ -199,19 +286,22 @@ internal sealed class Cafe24ApiClient
 
         try
         {
-            using var document = await SendJsonAsync(request, cancellationToken);
+            using var document = await SendJsonAsync(request, cancellationToken, treatUnauthorizedAsTokenExpired: false);
             config.AccessToken = GetString(document.RootElement, "access_token");
             var refreshToken = GetString(document.RootElement, "refresh_token");
             if (!string.IsNullOrWhiteSpace(refreshToken))
             {
                 config.RefreshToken = refreshToken;
             }
+
+            if (string.IsNullOrWhiteSpace(config.AccessToken))
+            {
+                throw new InvalidDataException("Cafe24 토큰 갱신 응답에서 ACCESS_TOKEN을 받지 못했습니다.");
+            }
         }
-        catch (HttpRequestException ex) when (ex.Message.Contains("client_secret", StringComparison.OrdinalIgnoreCase)
-            || ex.Message.Contains("client_id", StringComparison.OrdinalIgnoreCase)
-            || ex.Message.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase))
+        catch (HttpRequestException ex) when (RequiresReauthentication(ex.Message))
         {
-            throw new InvalidDataException("Cafe24 토큰 갱신 실패: CLIENT_ID / CLIENT_SECRET 값을 확인하거나 다시 인증해 주세요.", ex);
+            throw new Cafe24ReauthenticationRequiredException("Cafe24 토큰을 자동 갱신할 수 없습니다. 다시 인증해 주세요.", ex);
         }
     }
 
@@ -231,11 +321,11 @@ internal sealed class Cafe24ApiClient
         return request;
     }
 
-    private async Task<JsonDocument> SendJsonAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    private async Task<JsonDocument> SendJsonAsync(HttpRequestMessage request, CancellationToken cancellationToken, bool treatUnauthorizedAsTokenExpired = true)
     {
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (response.StatusCode == HttpStatusCode.Unauthorized)
+        if (treatUnauthorizedAsTokenExpired && response.StatusCode == HttpStatusCode.Unauthorized)
         {
             throw new Cafe24TokenExpiredException();
         }
@@ -246,6 +336,93 @@ internal sealed class Cafe24ApiClient
         }
 
         return string.IsNullOrWhiteSpace(body) ? JsonDocument.Parse("{}") : JsonDocument.Parse(body);
+    }
+
+    private static string BuildQueryString(IReadOnlyDictionary<string, string> values)
+    {
+        var builder = new StringBuilder();
+        foreach (var pair in values)
+        {
+            if (builder.Length > 0)
+            {
+                builder.Append('&');
+            }
+
+            builder
+                .Append(Uri.EscapeDataString(pair.Key))
+                .Append('=')
+                .Append(Uri.EscapeDataString(pair.Value ?? string.Empty));
+        }
+
+        return builder.ToString();
+    }
+
+    private static string ExtractQueryValue(string input, string key)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return string.Empty;
+        }
+
+        var source = input.Trim();
+        if (Uri.TryCreate(source, UriKind.Absolute, out var absoluteUri))
+        {
+            source = absoluteUri.Query;
+        }
+        else
+        {
+            var questionIndex = source.IndexOf('?');
+            if (questionIndex >= 0 && questionIndex + 1 < source.Length)
+            {
+                source = source[(questionIndex + 1)..];
+            }
+        }
+
+        source = source.Trim().TrimStart('?', '#');
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return string.Empty;
+        }
+
+        var pairs = source.Split('&', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var pair in pairs)
+        {
+            var separatorIndex = pair.IndexOf('=');
+            var rawKey = separatorIndex >= 0 ? pair[..separatorIndex] : pair;
+            var rawValue = separatorIndex >= 0 ? pair[(separatorIndex + 1)..] : string.Empty;
+            var decodedKey = Uri.UnescapeDataString(rawKey.Replace("+", "%20"));
+            if (!string.Equals(decodedKey, key, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return Uri.UnescapeDataString(rawValue.Replace("+", "%20"));
+        }
+
+        return string.Empty;
+    }
+
+    private static bool RequiresReauthentication(string message)
+    {
+        return IsCredentialError(message)
+            || message.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("invalid_client", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("invalid_request", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCredentialError(string message)
+    {
+        return message.Contains("client_secret", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("client_id", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAuthorizationCodeError(string message)
+    {
+        return message.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("authorization_code", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("expired", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("redirect_uri", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("invalid_request", StringComparison.OrdinalIgnoreCase);
     }
 
     private static int ExtractProductNo(JsonElement root)

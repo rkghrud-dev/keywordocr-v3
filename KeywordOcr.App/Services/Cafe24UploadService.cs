@@ -132,6 +132,10 @@ public sealed class Cafe24UploadService
                     uploadSucceeded = true;
                     break;
                 }
+                catch (Cafe24ReauthenticationRequiredException)
+                {
+                    throw;
+                }
                 catch (Exception ex) when (attempt < options.RetryCount)
                 {
                     uploadError = Cafe24UploadSupport.UnwrapMessage(ex);
@@ -334,6 +338,10 @@ public sealed class Cafe24UploadService
             try
             {
                 await ExecuteWithRefreshAsync(tokenState, cfg => _apiClient.UpdateVariantAsync(cfg, productNo, assignment.Variant.VariantCode, assignment.AdditionalAmount, cancellationToken), cancellationToken);
+            }
+            catch (Cafe24ReauthenticationRequiredException)
+            {
+                throw;
             }
             catch (Exception ex)
             {

@@ -131,6 +131,10 @@ public sealed class Cafe24CreateProductService
                     existingByName[productName] = new Cafe24Product(productNo, productName, customProductCode);
                 }
             }
+            catch (Cafe24ReauthenticationRequiredException)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 errorCount += 1;

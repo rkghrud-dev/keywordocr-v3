@@ -26,9 +26,11 @@ internal sealed class Cafe24ConfigStore
     public Cafe24TokenState LoadTokenState(string? preferredTokenFilePath = null)
     {
         var configuredTokenPath = ResolveConfiguredTokenPath();
+        var sharedTokenJsonPath = Cafe24SharedTokenStore.GetDefaultPath();
         var desktopKeywordocr = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "keywordocr");
         var tokenFilePath = FindFirstExisting(
+            sharedTokenJsonPath,
             ResolveOptionalPath(preferredTokenFilePath) ?? string.Empty,
             configuredTokenPath,
             Path.Combine(_v2Root, "cafe24_token.txt"),
@@ -40,7 +42,7 @@ internal sealed class Cafe24ConfigStore
 
         var fileValues = string.IsNullOrWhiteSpace(tokenFilePath)
             ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            : LoadKeyValueFile(tokenFilePath);
+            : LoadTokenFile(tokenFilePath);
         var envValues = string.IsNullOrWhiteSpace(envPath)
             ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             : LoadKeyValueFile(envPath);
@@ -53,12 +55,13 @@ internal sealed class Cafe24ConfigStore
             ClientId = PickValue(fileValues, envValues, "CLIENT_ID", "CAFE24_CLIENT_ID"),
             ClientSecret = PickValue(fileValues, envValues, "CLIENT_SECRET", "CAFE24_CLIENT_SECRET"),
             RedirectUri = PickValue(fileValues, envValues, "REDIRECT_URI", "CAFE24_REDIRECT_URI"),
+            Scope = PickValue(fileValues, envValues, "SCOPE", "CAFE24_SCOPE"),
             ShopNo = PickValue(fileValues, envValues, "SHOP_NO", "CAFE24_SHOP_NO", "1"),
             ApiVersion = PickValue(fileValues, envValues, "API_VERSION", "CAFE24_API_VERSION", "2025-12-01")
         };
 
         var configPath = string.IsNullOrWhiteSpace(tokenFilePath)
-            ? Path.Combine(_v2Root, "cafe24_token.txt")
+            ? sharedTokenJsonPath
             : tokenFilePath;
         return new Cafe24TokenState(configPath, config);
     }
@@ -126,6 +129,12 @@ internal sealed class Cafe24ConfigStore
 
     public void SaveTokenConfig(string path, Cafe24TokenConfig config)
     {
+        if (string.Equals(Path.GetExtension(path), ".json", StringComparison.OrdinalIgnoreCase))
+        {
+            Cafe24SharedTokenStore.Save(path, config);
+            return;
+        }
+
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(directory))
         {
@@ -140,6 +149,7 @@ internal sealed class Cafe24ConfigStore
             $"CLIENT_ID={config.ClientId}",
             $"CLIENT_SECRET={config.ClientSecret}",
             $"REDIRECT_URI={config.RedirectUri}",
+            $"SCOPE={config.Scope}",
             $"SHOP_NO={config.ShopNo}",
             $"API_VERSION={config.ApiVersion}"
         };
@@ -182,6 +192,13 @@ internal sealed class Cafe24ConfigStore
         return ResolveOptionalPath(GetConfigValue(values, "TOKEN_FILE")) ?? string.Empty;
     }
 
+    private static Dictionary<string, string> LoadTokenFile(string path)
+    {
+        return string.Equals(Path.GetExtension(path), ".json", StringComparison.OrdinalIgnoreCase)
+            ? Cafe24SharedTokenStore.LoadAsKeyValues(path)
+            : LoadKeyValueFile(path);
+    }
+
     private static Dictionary<string, string> LoadKeyValueFile(string path)
     {
         var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -221,14 +238,6 @@ internal sealed class Cafe24ConfigStore
         string secondaryKey,
         string defaultValue = "")
     {
-        if (secondary.TryGetValue(secondaryKey, out var secondaryValue) && !string.IsNullOrWhiteSpace(secondaryValue))
-        {
-            return secondaryValue;
-        }
-        if (secondary.TryGetValue(primaryKey, out var secondaryPlainValue) && !string.IsNullOrWhiteSpace(secondaryPlainValue))
-        {
-            return secondaryPlainValue;
-        }
         if (primary.TryGetValue(primaryKey, out var primaryValue) && !string.IsNullOrWhiteSpace(primaryValue))
         {
             return primaryValue;
@@ -236,6 +245,14 @@ internal sealed class Cafe24ConfigStore
         if (primary.TryGetValue(secondaryKey, out var primarySecondaryValue) && !string.IsNullOrWhiteSpace(primarySecondaryValue))
         {
             return primarySecondaryValue;
+        }
+        if (secondary.TryGetValue(secondaryKey, out var secondaryValue) && !string.IsNullOrWhiteSpace(secondaryValue))
+        {
+            return secondaryValue;
+        }
+        if (secondary.TryGetValue(primaryKey, out var secondaryPlainValue) && !string.IsNullOrWhiteSpace(secondaryPlainValue))
+        {
+            return secondaryPlainValue;
         }
         return defaultValue;
     }

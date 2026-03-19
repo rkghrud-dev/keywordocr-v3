@@ -674,10 +674,16 @@
                                 <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="토큰 상태"/>
                                 <TextBlock x:Name="SettingsTokenStatus" Grid.Row="2" Grid.Column="1" FontSize="11"
                                            Foreground="#888" VerticalAlignment="Center"/>
-                                <Button Grid.Row="2" Grid.Column="2" Content="토큰 갱신" Width="80" Height="24"
-                                        Background="#c44536" Foreground="White" FontSize="11"
-                                        Style="{StaticResource SmallButton}"
-                                        Click="RefreshToken_Click"/>
+                                <StackPanel Grid.Row="2" Grid.Column="2" Orientation="Horizontal" Margin="4,0,0,0">
+                                    <Button Content="다시 인증" Width="80" Height="24"
+                                            Background="#1a1a2e" Foreground="White" FontSize="11"
+                                            Style="{StaticResource SmallButton}"
+                                            Click="ReauthorizeToken_Click"/>
+                                    <Button Content="토큰 갱신" Width="80" Height="24" Margin="6,0,0,0"
+                                            Background="#c44536" Foreground="White" FontSize="11"
+                                            Style="{StaticResource SmallButton}"
+                                            Click="RefreshToken_Click"/>
+                                </StackPanel>
                             </Grid>
                         </Border>
 

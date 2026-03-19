@@ -34,6 +34,8 @@ internal sealed class Cafe24TokenConfig
 
     public string RedirectUri { get; set; } = string.Empty;
 
+    public string Scope { get; set; } = string.Empty;
+
     public string ShopNo { get; set; } = "1";
 
     public string ApiVersion { get; set; } = "2025-12-01";
@@ -109,3 +111,11 @@ internal sealed class Cafe24TokenExpiredException : Exception
 {
 }
 
+
+internal sealed class Cafe24ReauthenticationRequiredException : Exception
+{
+    public Cafe24ReauthenticationRequiredException(string message, Exception? innerException = null)
+        : base(message, innerException)
+    {
+    }
+}

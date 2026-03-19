@@ -10,6 +10,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -657,6 +658,15 @@ public partial class MainWindow : Window
             LoadUploadLog(result.LogPath);
         }
         catch (OperationCanceledException) { Log("업로드 취소됨"); StatusText.Text = "취소됨"; }
+        catch (Cafe24ReauthenticationRequiredException ex)
+        {
+            Log($"Cafe24 재인증 필요: {ex.Message}");
+            StatusText.Text = "재인증 필요";
+            await PromptCafe24ReauthenticationAsync(
+                "Cafe24 재인증 필요",
+                ex.Message,
+                "새 토큰을 저장했습니다. Cafe24 업로드를 다시 실행해 주세요.");
+        }
         catch (Exception ex)
         {
             Log($"Cafe24 오류: {ex.Message}");
@@ -710,6 +720,15 @@ public partial class MainWindow : Window
             StatusText.Text = $"등록 완료 (생성: {result.CreatedCount})";
         }
         catch (OperationCanceledException) { Log("등록 취소됨"); StatusText.Text = "취소됨"; }
+        catch (Cafe24ReauthenticationRequiredException ex)
+        {
+            Log($"Cafe24 재인증 필요: {ex.Message}");
+            StatusText.Text = "재인증 필요";
+            await PromptCafe24ReauthenticationAsync(
+                "Cafe24 재인증 필요",
+                ex.Message,
+                "새 토큰을 저장했습니다. 신규상품 등록을 다시 실행해 주세요.");
+        }
         catch (Exception ex)
         {
             Log($"등록 오류: {ex.Message}");
@@ -1116,6 +1135,15 @@ public partial class MainWindow : Window
             LoadUploadLog(result.LogPath);
         }
         catch (OperationCanceledException) { Log("업로드 취소됨"); StatusText.Text = "취소됨"; }
+        catch (Cafe24ReauthenticationRequiredException ex)
+        {
+            Log($"Cafe24 재인증 필요: {ex.Message}");
+            StatusText.Text = "재인증 필요";
+            await PromptCafe24ReauthenticationAsync(
+                "Cafe24 재인증 필요",
+                ex.Message,
+                "새 토큰을 저장했습니다. Cafe24 업로드를 다시 실행해 주세요.");
+        }
         catch (Exception ex)
         {
             Log($"Cafe24 오류: {ex.Message}");
@@ -1253,6 +1281,130 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void ReauthorizeToken_Click(object sender, RoutedEventArgs e)
+    {
+        if (await StartCafe24ReauthenticationAsync())
+        {
+            MessageBox.Show("Cafe24 새 토큰을 저장했습니다.", "Cafe24 다시 인증", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+    }
+
+    private async Task<bool> PromptCafe24ReauthenticationAsync(string title, string reasonMessage, string successMessage)
+    {
+        var message = string.IsNullOrWhiteSpace(reasonMessage)
+            ? "Cafe24 새 토큰을 다시 받으시겠습니까?"
+            : $"{reasonMessage}\n\n지금 Cafe24 새 토큰을 다시 받으시겠습니까?";
+
+        if (MessageBox.Show(message, title, MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+        {
+            return false;
+        }
+
+        if (!await StartCafe24ReauthenticationAsync())
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(successMessage))
+        {
+            MessageBox.Show(successMessage, title, MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        return true;
+    }
+
+    private async Task<bool> StartCafe24ReauthenticationAsync()
+    {
+        try
+        {
+            var store = new Cafe24ConfigStore(_v3Root, _legacyRoot);
+            var tokenPath = string.IsNullOrWhiteSpace(SettingsTokenPath.Text)
+                ? null : SettingsTokenPath.Text.Trim();
+            var state = store.LoadTokenState(tokenPath);
+
+            ValidateCafe24ReauthenticationConfig(state.Config);
+
+            var client = new Cafe24ApiClient();
+            var authorizeUrl = client.BuildAuthorizeUrl(state.Config);
+            var dialog = new Cafe24AuthCodeDialog(authorizeUrl) { Owner = this };
+
+            TryOpenCafe24AuthorizePage(authorizeUrl);
+            if (dialog.ShowDialog() != true)
+            {
+                Log("Cafe24 다시 인증이 취소되었습니다.");
+                SettingsTokenStatus.Text = "다시 인증 취소";
+                return false;
+            }
+
+            var authorizationCode = Cafe24ApiClient.ExtractAuthorizationCode(dialog.InputText);
+            if (string.IsNullOrWhiteSpace(authorizationCode))
+            {
+                throw new InvalidDataException("붙여넣은 값에서 Cafe24 authorization code를 찾지 못했습니다.");
+            }
+
+            StatusText.Text = "Cafe24 다시 인증 중...";
+            await client.ExchangeAuthorizationCodeAsync(state.Config, authorizationCode, CancellationToken.None);
+            store.SaveTokenConfig(state.ConfigPath, state.Config);
+
+            SettingsTokenPath.Text = state.ConfigPath;
+            LoadTokenInfo();
+            SettingsTokenStatus.Text = $"다시 인증 완료 ({DateTime.Now:HH:mm:ss})";
+            Log("Cafe24 다시 인증 완료");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log($"Cafe24 다시 인증 오류: {ex.Message}");
+            SettingsTokenStatus.Text = "다시 인증 실패";
+            MessageBox.Show(ex.Message, "Cafe24 다시 인증 오류", MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
+        }
+        finally
+        {
+            StatusText.Text = "대기 중";
+        }
+    }
+
+    private void TryOpenCafe24AuthorizePage(string authorizeUrl)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(authorizeUrl) { UseShellExecute = true });
+            Log("Cafe24 인증 페이지를 브라우저에서 열었습니다.");
+        }
+        catch (Exception ex)
+        {
+            Log($"브라우저 자동 열기 실패: {ex.Message}");
+        }
+    }
+
+    private static void ValidateCafe24ReauthenticationConfig(Cafe24TokenConfig config)
+    {
+        var missing = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(config.MallId))
+        {
+            missing.Add("MALL_ID");
+        }
+        if (string.IsNullOrWhiteSpace(config.ClientId))
+        {
+            missing.Add("CLIENT_ID");
+        }
+        if (string.IsNullOrWhiteSpace(config.ClientSecret))
+        {
+            missing.Add("CLIENT_SECRET");
+        }
+        if (string.IsNullOrWhiteSpace(config.RedirectUri))
+        {
+            missing.Add("REDIRECT_URI");
+        }
+
+        if (missing.Count > 0)
+        {
+            throw new InvalidDataException($"Cafe24 다시 인증에 필요한 설정이 없습니다: {string.Join(", ", missing)}");
+        }
+    }
+
     private async void RefreshToken_Click(object sender, RoutedEventArgs e)
     {
         try
@@ -1266,8 +1418,19 @@ public partial class MainWindow : Window
             await client.RefreshAccessTokenAsync(state.Config, CancellationToken.None);
             store.SaveTokenConfig(state.ConfigPath, state.Config);
 
+            SettingsTokenPath.Text = state.ConfigPath;
+            LoadTokenInfo();
             SettingsTokenStatus.Text = $"갱신 완료 ({DateTime.Now:HH:mm:ss})";
             Log("Cafe24 토큰 갱신 완료");
+        }
+        catch (Cafe24ReauthenticationRequiredException ex)
+        {
+            Log($"토큰 갱신 오류: {ex.Message}");
+            SettingsTokenStatus.Text = "다시 인증 필요";
+            await PromptCafe24ReauthenticationAsync(
+                "토큰 갱신 오류",
+                ex.Message,
+                "Cafe24 새 토큰을 저장했습니다.");
         }
         catch (Exception ex)
         {
