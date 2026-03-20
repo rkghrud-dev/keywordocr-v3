@@ -105,16 +105,18 @@
                             FontSize="10" Background="Transparent" BorderBrush="#ccc" BorderThickness="1"
                             Cursor="Hand" Click="ClearLog_Click"/>
                 </Grid>
-                <ScrollViewer x:Name="LogScroller" Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                    <TextBlock x:Name="LogBlock" Padding="10,2" FontSize="11"
-                               FontFamily="Consolas, 'D2Coding'" TextWrapping="Wrap"
-                               Foreground="#333"/>
-                </ScrollViewer>
+                <TextBox x:Name="LogBlock" Grid.Row="1" IsReadOnly="True"
+                         Padding="10,2" FontSize="11"
+                         FontFamily="Consolas, 'D2Coding'" TextWrapping="Wrap"
+                         Foreground="#333" Background="Transparent" BorderThickness="0"
+                         VerticalScrollBarVisibility="Auto"
+                         AcceptsReturn="True"/>
             </Grid>
         </Border>
 
         <!-- ═══ 탭 영역 ═══ -->
         <TabControl Margin="20,10,20,10" Background="Transparent" BorderBrush="#ddd">
+
 
             <!-- ════════════ TAB 1: 실행 ════════════ -->
             <TabItem Header="  실행  " FontSize="13" FontWeight="SemiBold">
@@ -275,7 +277,106 @@
                 </ScrollViewer>
             </TabItem>
 
-            <!-- ════════════ TAB 2: Cafe24 업로드 ════════════ -->
+
+            <!-- ════════════ TAB 2: 실행 이력 ════════════ -->
+            <TabItem Header="  실행 이력  " FontSize="13" FontWeight="SemiBold">
+                <Grid Margin="16,12">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Style="{StaticResource SectionLabel}"
+                                   Text="파이프라인 실행 이력" VerticalAlignment="Center"/>
+                        <Button Grid.Column="2" Content="새로고침" Width="70" Height="28"
+                                Background="#e0e0e0" Foreground="#333" FontSize="11"
+                                Style="{StaticResource SmallButton}"
+                                Click="RefreshHistory_Click"/>
+                    </Grid>
+
+                    <Border Grid.Row="1" Background="White" BorderBrush="#ddd" BorderThickness="1" CornerRadius="6">
+                        <DataGrid x:Name="HistoryGrid" AutoGenerateColumns="False"
+                                  HeadersVisibility="Column" IsReadOnly="True"
+                                  GridLinesVisibility="Horizontal" BorderThickness="0"
+                                  FontSize="11" SelectionMode="Single"
+                                  CanUserSortColumns="True"
+                                  MouseDoubleClick="HistoryGrid_DoubleClick">
+                            <DataGrid.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem Header="결과 불러오기" FontWeight="SemiBold" Click="HistoryLoad_Click"/>
+                                    <MenuItem Header="이미지 선택" Click="HistoryImageSelect_Click"/>
+                                    <MenuItem Header="상품목록 보기" Click="HistoryViewProducts_Click"/>
+                                    <Separator/>
+                                    <MenuItem Header="Cafe24 상품 엑셀 업로드 (브라우저)" Click="HistoryOpenCafe24Excel_Click"/>
+                                    <MenuItem Header="Cafe24 이미지+가격 업로드 (API)" Click="HistoryCafe24Upload_Click"/>
+                                    <MenuItem Header="Cafe24 신규상품 등록 (API)" Click="HistoryCafe24Create_Click"/>
+                                    <Separator/>
+                                    <MenuItem Header="업로드용 엑셀 열기" Click="HistoryOpenExcel_Click"/>
+                                    <MenuItem Header="결과 폴더 열기" Click="HistoryOpenFolder_Click"/>
+                                    <MenuItem Header="엑셀 경로 복사" Click="HistoryCopyPath_Click"/>
+                                    <Separator/>
+                                    <MenuItem Header="메모 수정" Click="HistoryEditMemo_Click"/>
+                                    <MenuItem Header="이력 복제" Click="HistoryCopy_Click"/>
+                                    <MenuItem Header="삭제" Foreground="#c44536" Click="HistoryDelete_Click"/>
+                                </ContextMenu>
+                            </DataGrid.ContextMenu>
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="일시" Binding="{Binding DisplayTime}" Width="90"/>
+                                <DataGridTextColumn Header="파일" Binding="{Binding DisplaySource}" Width="160"/>
+                                <DataGridTextColumn Header="요약" Binding="{Binding DisplaySummary}" Width="*"/>
+                                <DataGridTextColumn Header="상태" Binding="{Binding Status}" Width="60"/>
+                                <DataGridTextColumn Header="이미지" Binding="{Binding DisplayImageStatus}" Width="70"/>
+                                <DataGridTextColumn Header="진행" Binding="{Binding DisplayProgress}" Width="180"/>
+                                <DataGridTextColumn Header="메모" Binding="{Binding Memo}" Width="120"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Border>
+
+                    <Grid Grid.Row="2" Margin="0,8,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="4"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="4"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="4"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0" Content="결과 불러오기" Width="100" Height="32"
+                                Background="#1a1a2e" Foreground="White" FontSize="11"
+                                Style="{StaticResource SmallButton}"
+                                Click="HistoryLoad_Click"/>
+                        <Button Grid.Column="2" Content="폴더 열기" Width="80" Height="32"
+                                Background="#457b9d" Foreground="White" FontSize="11"
+                                Style="{StaticResource SmallButton}"
+                                Click="HistoryOpenFolder_Click"/>
+                        <Button Grid.Column="4" Content="복사" Width="60" Height="32"
+                                Background="#2d6a4f" Foreground="White" FontSize="11"
+                                Style="{StaticResource SmallButton}"
+                                Click="HistoryCopy_Click"/>
+                        <Button Grid.Column="6" Content="메모 수정" Width="80" Height="32"
+                                Background="#e0e0e0" Foreground="#333" FontSize="11"
+                                Style="{StaticResource SmallButton}"
+                                Click="HistoryEditMemo_Click"/>
+                        <Button Grid.Column="8" Content="삭제" Width="60" Height="32"
+                                Background="#c44536" Foreground="White" FontSize="11"
+                                Style="{StaticResource SmallButton}"
+                                Click="HistoryDelete_Click"/>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+
+            <!-- ════════════ TAB 4: Cafe24 업로드 ════════════ -->
             <TabItem Header="  Cafe24 업로드  " FontSize="13" FontWeight="SemiBold">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16,12">
                     <StackPanel>
@@ -394,6 +495,7 @@
                 </ScrollViewer>
             </TabItem>
 
+
             <!-- ════════════ TAB 3: 옵션 가격 ════════════ -->
             <TabItem Header="  옵션 가격  " FontSize="13" FontWeight="SemiBold">
                 <Grid Margin="16,12">
@@ -465,100 +567,132 @@
                 </Grid>
             </TabItem>
 
-            <!-- ════════════ TAB 4: 실행 이력 ════════════ -->
-            <TabItem Header="  실행 이력  " FontSize="13" FontWeight="SemiBold">
+
+            <!-- ════════════ TAB 5: 이미지 선택 ════════════ -->
+            <TabItem x:Name="ImageSelectionTab" Header="  이미지 선택  " FontSize="13" FontWeight="SemiBold">
                 <Grid Margin="16,12">
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <Grid Grid.Row="0" Margin="0,0,0,8">
+                    <!-- 상단: 파일 정보 + 버튼 -->
+                    <Grid Grid.Row="0" Margin="0,0,0,4">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0" Style="{StaticResource SectionLabel}"
-                                   Text="파이프라인 실행 이력" VerticalAlignment="Center"/>
-                        <Button Grid.Column="2" Content="새로고침" Width="70" Height="28"
-                                Background="#e0e0e0" Foreground="#333" FontSize="11"
-                                Style="{StaticResource SmallButton}"
-                                Click="RefreshHistory_Click"/>
+                                   Text="대표/추가 이미지 선택" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="ImageSelectionStatus" Grid.Column="1" FontSize="11"
+                                   Foreground="#888" VerticalAlignment="Center" Margin="10,0,0,0"/>
+                        <Button Grid.Column="2" x:Name="LoadImagesButton" Content="이미지 불러오기"
+                                Width="120" Height="30" Margin="0,0,4,0"
+                                Background="#1a1a2e" Foreground="White" FontSize="11"
+                                Style="{StaticResource SmallButton}" Click="LoadImages_Click"/>
+                        <Button Grid.Column="3" x:Name="SaveImageSelectionButton" Content="선택 저장"
+                                Width="80" Height="30"
+                                Background="#2d6a4f" Foreground="White" FontSize="11"
+                                Style="{StaticResource SmallButton}" Click="SaveImageSelection_Click"/>
                     </Grid>
 
-                    <Border Grid.Row="1" Background="White" BorderBrush="#ddd" BorderThickness="1" CornerRadius="6">
-                        <DataGrid x:Name="HistoryGrid" AutoGenerateColumns="False"
-                                  HeadersVisibility="Column" IsReadOnly="True"
-                                  GridLinesVisibility="Horizontal" BorderThickness="0"
-                                  FontSize="11" SelectionMode="Single"
-                                  CanUserSortColumns="True"
-                                  MouseDoubleClick="HistoryGrid_DoubleClick">
-                            <DataGrid.ContextMenu>
-                                <ContextMenu>
-                                    <MenuItem Header="결과 불러오기" FontWeight="SemiBold" Click="HistoryLoad_Click"/>
-                                    <Separator/>
-                                    <MenuItem Header="Cafe24 상품 엑셀 업로드 (브라우저)" Click="HistoryOpenCafe24Excel_Click"/>
-                                    <MenuItem Header="Cafe24 이미지+가격 업로드 (API)" Click="HistoryCafe24Upload_Click"/>
-                                    <MenuItem Header="Cafe24 신규상품 등록 (API)" Click="HistoryCafe24Create_Click"/>
-                                    <Separator/>
-                                    <MenuItem Header="업로드용 엑셀 열기" Click="HistoryOpenExcel_Click"/>
-                                    <MenuItem Header="결과 폴더 열기" Click="HistoryOpenFolder_Click"/>
-                                    <MenuItem Header="엑셀 경로 복사" Click="HistoryCopyPath_Click"/>
-                                    <Separator/>
-                                    <MenuItem Header="메모 수정" Click="HistoryEditMemo_Click"/>
-                                    <MenuItem Header="이력 복제" Click="HistoryCopy_Click"/>
-                                    <MenuItem Header="삭제" Foreground="#c44536" Click="HistoryDelete_Click"/>
-                                </ContextMenu>
-                            </DataGrid.ContextMenu>
-                            <DataGrid.Columns>
-                                <DataGridTextColumn Header="일시" Binding="{Binding DisplayTime}" Width="90"/>
-                                <DataGridTextColumn Header="파일" Binding="{Binding DisplaySource}" Width="160"/>
-                                <DataGridTextColumn Header="요약" Binding="{Binding DisplaySummary}" Width="*"/>
-                                <DataGridTextColumn Header="상태" Binding="{Binding Status}" Width="60"/>
-                                <DataGridTextColumn Header="메모" Binding="{Binding Memo}" Width="120"/>
-                            </DataGrid.Columns>
-                        </DataGrid>
+                    <!-- 파일명/일시 표시 -->
+                    <Border Grid.Row="1" Background="#f0f4ff" CornerRadius="4" Padding="8,4" Margin="0,0,0,8">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="파일:" FontSize="11" FontWeight="SemiBold" Foreground="#555" Margin="0,0,4,0" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="ImageSourceFileText" FontSize="11" Foreground="#333" VerticalAlignment="Center" Margin="0,0,16,0"/>
+                            <TextBlock Text="일시:" FontSize="11" FontWeight="SemiBold" Foreground="#555" Margin="0,0,4,0" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="ImageSourceDateText" FontSize="11" Foreground="#333" VerticalAlignment="Center" Margin="0,0,16,0"/>
+                            <TextBlock Text="GS코드:" FontSize="11" FontWeight="SemiBold" Foreground="#555" Margin="0,0,4,0" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="ImageGsCountText" FontSize="11" Foreground="#333" VerticalAlignment="Center"/>
+                        </StackPanel>
                     </Border>
 
-                    <Grid Grid.Row="2" Margin="0,8,0,0">
+                    <!-- 메인: 왼쪽 GS목록 + 오른쪽 썸네일 -->
+                    <Grid Grid.Row="2">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="4"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="4"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="4"/>
-                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="130"/>
+                            <ColumnDefinition Width="8"/>
                             <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <Button Grid.Column="0" Content="결과 불러오기" Width="100" Height="32"
-                                Background="#1a1a2e" Foreground="White" FontSize="11"
-                                Style="{StaticResource SmallButton}"
-                                Click="HistoryLoad_Click"/>
-                        <Button Grid.Column="2" Content="폴더 열기" Width="80" Height="32"
-                                Background="#457b9d" Foreground="White" FontSize="11"
-                                Style="{StaticResource SmallButton}"
-                                Click="HistoryOpenFolder_Click"/>
-                        <Button Grid.Column="4" Content="복사" Width="60" Height="32"
-                                Background="#2d6a4f" Foreground="White" FontSize="11"
-                                Style="{StaticResource SmallButton}"
-                                Click="HistoryCopy_Click"/>
-                        <Button Grid.Column="6" Content="메모 수정" Width="80" Height="32"
-                                Background="#e0e0e0" Foreground="#333" FontSize="11"
-                                Style="{StaticResource SmallButton}"
-                                Click="HistoryEditMemo_Click"/>
-                        <Button Grid.Column="8" Content="삭제" Width="60" Height="32"
-                                Background="#c44536" Foreground="White" FontSize="11"
-                                Style="{StaticResource SmallButton}"
-                                Click="HistoryDelete_Click"/>
+
+                        <!-- 왼쪽: GS코드 목록 -->
+                        <Border Grid.Column="0" Background="White" BorderBrush="#ddd"
+                                BorderThickness="1" CornerRadius="6">
+                            <ListBox x:Name="ImageGsListBox"
+                                     SelectionChanged="ImageGsListBox_SelectionChanged"
+                                     FontSize="11" BorderThickness="0"
+                                     FontFamily="Consolas, 'D2Coding'"/>
+                        </Border>
+
+                        <!-- 오른쪽: 썸네일 그리드 -->
+                        <Border Grid.Column="2" Background="White" BorderBrush="#ddd"
+                                BorderThickness="1" CornerRadius="6" Padding="8">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <ItemsControl x:Name="ThumbnailPanel">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel/>
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border x:Name="thumbBorder" Margin="4" Padding="2" CornerRadius="4"
+                                                    BorderThickness="3" BorderBrush="#ddd"
+                                                    Background="#f8f9fa"
+                                                    MouseLeftButtonDown="Thumbnail_LeftClick"
+                                                    MouseRightButtonDown="Thumbnail_RightClick"
+                                                    Cursor="Hand" ToolTip="좌클릭: 대표이미지 / 우클릭: 추가이미지 토글">
+                                                <StackPanel>
+                                                    <Image Source="{Binding Thumbnail}"
+                                                           Width="140" Height="140"
+                                                           Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
+                                                    <TextBlock HorizontalAlignment="Center"
+                                                               FontSize="10" Margin="0,2,0,2"
+                                                               Text="{Binding StatusText}" Foreground="{Binding StatusColor}"/>
+                                                </StackPanel>
+                                            </Border>
+                                            <DataTemplate.Triggers>
+                                                <DataTrigger Binding="{Binding IsMain}" Value="True">
+                                                    <Setter TargetName="thumbBorder" Property="BorderBrush" Value="#2196F3"/>
+                                                    <Setter TargetName="thumbBorder" Property="Background" Value="#E3F2FD"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding IsAdditional}" Value="True">
+                                                    <Setter TargetName="thumbBorder" Property="BorderBrush" Value="#4CAF50"/>
+                                                    <Setter TargetName="thumbBorder" Property="Background" Value="#E8F5E9"/>
+                                                </DataTrigger>
+                                            </DataTemplate.Triggers>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </Border>
                     </Grid>
+
+                    <!-- 하단: 범례 -->
+                    <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,8,0,0">
+                        <Border Width="16" Height="16" BorderBrush="#2196F3" BorderThickness="3"
+                                CornerRadius="2" Margin="0,0,4,0" Background="#E3F2FD"/>
+                        <TextBlock Text="대표이미지 (좌클릭)" FontSize="11" Foreground="#555"
+                                   VerticalAlignment="Center" Margin="0,0,16,0"/>
+                        <Border Width="16" Height="16" BorderBrush="#4CAF50" BorderThickness="3"
+                                CornerRadius="2" Margin="0,0,4,0" Background="#E8F5E9"/>
+                        <TextBlock Text="추가이미지 (우클릭)" FontSize="11" Foreground="#555"
+                                   VerticalAlignment="Center" Margin="0,0,16,0"/>
+                        <Border Width="16" Height="16" BorderBrush="#ddd" BorderThickness="3"
+                                CornerRadius="2" Margin="0,0,4,0"/>
+                        <TextBlock Text="미선택" FontSize="11" Foreground="#888"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
                 </Grid>
             </TabItem>
 
-            <!-- ════════════ TAB 5: 설정 ════════════ -->
+
+            <!-- ════════════ TAB 6: 설정 ════════════ -->
             <TabItem Header="  설정  " FontSize="13" FontWeight="SemiBold">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16,12">
                     <StackPanel>
@@ -713,6 +847,7 @@
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
+
         </TabControl>
     </DockPanel>
 </Window>

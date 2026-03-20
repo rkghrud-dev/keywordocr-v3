@@ -13,7 +13,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using ClosedXML.Excel;
 using KeywordOcr.App.Services;
 using Microsoft.Win32;
@@ -31,10 +33,16 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _cts;
     private readonly ObservableCollection<ProductItem> _products = new();
     private readonly ObservableCollection<PriceRow> _priceRows = new();
+    private readonly ObservableCollection<string> _imageGsCodes = new();
+    private readonly ObservableCollection<ImageThumbnailItem> _imageThumbnails = new();
+    private readonly Dictionary<string, ImageSelection> _imageSelections = new(StringComparer.OrdinalIgnoreCase);
+    private string? _imageListingRoot;
     private JobHistoryService? _jobHistory;
+    private string _settingsPath = "";
 
     public MainWindow()
     {
+        System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
         InitializeComponent();
 
         _v3Root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
@@ -43,14 +51,19 @@ public partial class MainWindow : Window
         if (!Directory.Exists(Path.Combine(_legacyRoot, "app")))
             _legacyRoot = @"C:\Users\rkghr\Desktop\프로젝트\keywordocr";
 
+        _settingsPath = Path.Combine(_legacyRoot, "app_settings.json");
+
         ProductList.ItemsSource = _products;
         PriceGrid.ItemsSource = _priceRows;
+        ImageGsListBox.ItemsSource = _imageGsCodes;
+        ThumbnailPanel.ItemsSource = _imageThumbnails;
 
         // 설정 탭 초기값
         SettingsLegacyRoot.Text = _legacyRoot;
         SettingsV3Root.Text = _v3Root;
         Cafe24DateTag.Text = DateTime.Now.ToString("yyyyMMdd");
         LoadTokenInfo();
+        LoadAppSettings();
 
         _jobHistory = new JobHistoryService(_legacyRoot);
         RefreshHistoryGrid();
@@ -433,7 +446,7 @@ public partial class MainWindow : Window
 
     private ListingImageSettings BuildListingSettings()
     {
-        return new ListingImageSettings(
+        var s = new ListingImageSettings(
             MakeListing: MakeListingCheck.IsChecked == true,
             ListingSize: ParseInt(SettingsListingSize, 1200),
             LogoPath: SettingsLogoPath.Text.Trim(),
@@ -448,6 +461,53 @@ public partial class MainWindow : Window
             JpegQualityMax: ParseInt(SettingsJpegMax, 92),
             FlipLeftRight: SettingsFlipLR.IsChecked == true
         );
+        SaveAppSettings(s);
+        return s;
+    }
+
+    private void SaveAppSettings(ListingImageSettings s)
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(s, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(_settingsPath, json);
+        }
+        catch { }
+    }
+
+    private void LoadAppSettings()
+    {
+        try
+        {
+            if (!File.Exists(_settingsPath)) return;
+            var json = File.ReadAllText(_settingsPath);
+            var s = JsonSerializer.Deserialize<ListingImageSettings>(json);
+            if (s is null) return;
+
+            SettingsLogoPath.Text = s.LogoPath;
+            SettingsLogoRatio.Text = s.LogoRatio.ToString();
+            SettingsLogoOpacity.Text = s.LogoOpacity.ToString();
+            SettingsListingSize.Text = s.ListingSize.ToString();
+            SettingsJpegMin.Text = s.JpegQualityMin.ToString();
+            SettingsJpegMax.Text = s.JpegQualityMax.ToString();
+            SettingsRotateZoom.Text = s.RotateZoom.ToString(CultureInfo.InvariantCulture);
+            SettingsAutoContrast.IsChecked = s.UseAutoContrast;
+            SettingsSharpen.IsChecked = s.UseSharpen;
+            SettingsSmallRotate.IsChecked = s.UseSmallRotate;
+            SettingsFlipLR.IsChecked = s.FlipLeftRight;
+            MakeListingCheck.IsChecked = s.MakeListing;
+
+            // 로고 위치 콤보박스
+            foreach (ComboBoxItem item in SettingsLogoPos.Items)
+            {
+                if (item.Content?.ToString() == s.LogoPosition)
+                {
+                    SettingsLogoPos.SelectedItem = item;
+                    break;
+                }
+            }
+        }
+        catch { }
     }
 
     private async void RunPipeline_Click(object sender, RoutedEventArgs e)
@@ -559,6 +619,17 @@ public partial class MainWindow : Window
         // 결과 폴더 자동 열기
         if (!string.IsNullOrEmpty(_lastOutputRoot) && Directory.Exists(_lastOutputRoot))
             Process.Start(new ProcessStartInfo("explorer.exe", _lastOutputRoot));
+
+        // 완료 알림 + 앱 포커스
+        Activate();
+        Topmost = true;
+        Topmost = false;
+        System.Media.SystemSounds.Asterisk.Play();
+        MessageBox.Show(
+            $"파이프라인 완료!\n\n" +
+            $"파일: {Path.GetFileName(result.OutputFile)}\n" +
+            $"폴더: {_lastOutputRoot}",
+            "작업 완료", MessageBoxButton.OK, MessageBoxImage.Information);
 
         // 실행 이력 저장
         var selectedModel = (ModelCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
@@ -1238,6 +1309,50 @@ public partial class MainWindow : Window
         }
     }
 
+    private void HistoryViewProducts_Click(object sender, RoutedEventArgs e)
+    {
+        var job = GetSelectedJob();
+        if (job == null) { MessageBox.Show("이력을 선택하세요.", "알림"); return; }
+
+        if (job.SelectedCodes.Count == 0)
+        {
+            MessageBox.Show("선택된 상품코드가 없습니다.", "알림");
+            return;
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"작업: {job.DisplaySource} ({job.DisplayTime})");
+        sb.AppendLine($"총 {job.SelectedCodes.Count}개 상품코드");
+        sb.AppendLine(new string('─', 40));
+        for (int i = 0; i < job.SelectedCodes.Count; i++)
+            sb.AppendLine($"  {i + 1}. {job.SelectedCodes[i]}");
+
+        MessageBox.Show(sb.ToString(), "상품목록", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private void HistoryImageSelect_Click(object sender, RoutedEventArgs e)
+    {
+        var job = GetSelectedJob();
+        if (job == null) { MessageBox.Show("이력을 선택하세요.", "알림"); return; }
+
+        if (!Directory.Exists(job.OutputRoot))
+        {
+            MessageBox.Show($"결과 폴더가 존재하지 않습니다.\n{job.OutputRoot}", "알림",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // 해당 작업의 결과를 로드
+        _lastOutputRoot = job.OutputRoot;
+        _lastOutputFile = job.OutputFile;
+
+        // 이미지 불러오기 실행
+        LoadImages_Click(sender, e);
+
+        // 이미지선택 탭으로 이동
+        ImageSelectionTab.IsSelected = true;
+    }
+
     #endregion
 
     #region ═══ 설정 탭 ═══
@@ -1517,8 +1632,8 @@ public partial class MainWindow : Window
         var time = DateTime.Now.ToString("HH:mm:ss");
         Dispatcher.Invoke(() =>
         {
-            LogBlock.Text += $"[{time}] {message}\n";
-            LogScroller.ScrollToEnd();
+            LogBlock.AppendText($"[{time}] {message}\n");
+            LogBlock.ScrollToEnd();
         });
     }
 
@@ -1544,6 +1659,213 @@ public partial class MainWindow : Window
     {
         _cts?.Cancel();
         base.OnClosed(e);
+    }
+
+    #endregion
+
+    #region ═══ 이미지 선택 ═══
+
+    private void LoadImages_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(_lastOutputRoot) || !Directory.Exists(_lastOutputRoot))
+        {
+            MessageBox.Show("먼저 파이프라인을 실행하거나 이력을 불러오세요.", "알림",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var listingRoot = Path.Combine(_lastOutputRoot, "listing_images");
+        if (!Directory.Exists(listingRoot))
+        {
+            Log("listing_images 폴더를 찾을 수 없습니다.");
+            return;
+        }
+
+        var dateDir = Directory.GetDirectories(listingRoot)
+            .OrderByDescending(d => d).FirstOrDefault();
+        if (dateDir == null)
+        {
+            Log("날짜 폴더를 찾을 수 없습니다.");
+            return;
+        }
+
+        _imageListingRoot = dateDir;
+        _imageGsCodes.Clear();
+        _imageSelections.Clear();
+        _imageThumbnails.Clear();
+
+        // 기존 선택 불러오기
+        var selectionsPath = Path.Combine(_lastOutputRoot, "image_selections.json");
+        if (File.Exists(selectionsPath))
+            LoadImageSelectionsFromJson(selectionsPath);
+
+        var gsFolders = Cafe24UploadSupport.GetGsFolders(dateDir);
+        foreach (var folder in gsFolders)
+        {
+            var gs = folder.Name.ToUpperInvariant();
+            var gs9 = gs.Length >= 9 ? gs[..9] : gs;
+            _imageGsCodes.Add(gs9);
+
+            if (!_imageSelections.ContainsKey(gs9))
+            {
+                var fileCount = Directory.GetFiles(folder.FullName)
+                    .Count(f => IsImageFile(f));
+                var mainIdx = fileCount >= 2 ? 1 : 0;
+                var addIndices = Enumerable.Range(2, Math.Max(0, fileCount - 2)).ToList();
+                _imageSelections[gs9] = new ImageSelection(mainIdx, addIndices);
+            }
+        }
+
+        // 파일 정보 표시
+        var sourceName = _lastOutputFile != null ? Path.GetFileName(_lastOutputFile) : Path.GetFileName(_lastOutputRoot ?? "");
+        var dateFolderName = Path.GetFileName(dateDir);
+        ImageSourceFileText.Text = sourceName;
+        ImageSourceDateText.Text = dateFolderName;
+        ImageGsCountText.Text = $"{_imageGsCodes.Count}개";
+        ImageSelectionStatus.Text = $"{_imageGsCodes.Count}개 상품";
+        Log($"이미지 불러오기 완료: {_imageGsCodes.Count}개 상품 ({dateFolderName})");
+
+        if (_imageGsCodes.Count > 0)
+            ImageGsListBox.SelectedIndex = 0;
+    }
+
+    private void ImageGsListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        _imageThumbnails.Clear();
+        if (ImageGsListBox.SelectedItem is not string gs || _imageListingRoot == null) return;
+
+        var folder = Path.Combine(_imageListingRoot, gs);
+        if (!Directory.Exists(folder)) return;
+
+        var files = Directory.GetFiles(folder)
+            .Where(f => IsImageFile(f))
+            .OrderBy(f => f)
+            .ToList();
+
+        _imageSelections.TryGetValue(gs, out var selection);
+
+        for (int i = 0; i < files.Count; i++)
+        {
+            var item = new ImageThumbnailItem
+            {
+                Index = i,
+                DisplayNumber = i + 1,
+                FilePath = files[i],
+                Thumbnail = LoadThumbnail(files[i]),
+                IsMain = selection?.MainIndex == i,
+                IsAdditional = selection?.AdditionalIndices?.Contains(i) == true,
+            };
+            _imageThumbnails.Add(item);
+        }
+    }
+
+    private void Thumbnail_LeftClick(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement fe || fe.DataContext is not ImageThumbnailItem clicked) return;
+        if (ImageGsListBox.SelectedItem is not string gs) return;
+
+        foreach (var item in _imageThumbnails)
+            item.IsMain = false;
+
+        clicked.IsMain = true;
+        clicked.IsAdditional = false;
+        UpdateSelectionForGs(gs);
+    }
+
+    private void Thumbnail_RightClick(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement fe || fe.DataContext is not ImageThumbnailItem clicked) return;
+        if (ImageGsListBox.SelectedItem is not string gs) return;
+
+        if (clicked.IsMain) return;
+        clicked.IsAdditional = !clicked.IsAdditional;
+        UpdateSelectionForGs(gs);
+        e.Handled = true;
+    }
+
+    private void UpdateSelectionForGs(string gs)
+    {
+        var mainItem = _imageThumbnails.FirstOrDefault(t => t.IsMain);
+        var addItems = _imageThumbnails.Where(t => t.IsAdditional).Select(t => t.Index).ToList();
+        _imageSelections[gs] = new ImageSelection(mainItem?.Index, addItems);
+    }
+
+    private void SaveImageSelection_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(_lastOutputRoot))
+        {
+            MessageBox.Show("저장할 대상이 없습니다.", "알림"); return;
+        }
+
+        var dict = new Dictionary<string, object>();
+        foreach (var kvp in _imageSelections)
+        {
+            dict[kvp.Key] = new { main = kvp.Value.MainIndex, additional = kvp.Value.AdditionalIndices };
+        }
+
+        var json = JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true });
+        var path = Path.Combine(_lastOutputRoot, "image_selections.json");
+        File.WriteAllText(path, json, Encoding.UTF8);
+        Log($"이미지 선택 저장 완료: {_imageSelections.Count}개 상품");
+
+        // 실행이력에 이미지 선택 완료 표시
+        if (_jobHistory != null)
+        {
+            var job = _jobHistory.Records.FirstOrDefault(r => r.OutputRoot == _lastOutputRoot);
+            if (job != null && !job.ImageSelected)
+            {
+                job.ImageSelected = true;
+                _jobHistory.Update(job);
+                RefreshHistoryGrid();
+            }
+        }
+    }
+
+    private void LoadImageSelectionsFromJson(string path)
+    {
+        try
+        {
+            var json = File.ReadAllText(path, Encoding.UTF8);
+            using var doc = JsonDocument.Parse(json);
+            foreach (var prop in doc.RootElement.EnumerateObject())
+            {
+                int? mainIdx = null;
+                var addIndices = new List<int>();
+
+                if (prop.Value.TryGetProperty("main", out var mainEl) && mainEl.ValueKind == JsonValueKind.Number)
+                    mainIdx = mainEl.GetInt32();
+                if (prop.Value.TryGetProperty("additional", out var addEl) && addEl.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in addEl.EnumerateArray())
+                        if (item.ValueKind == JsonValueKind.Number) addIndices.Add(item.GetInt32());
+                }
+
+                _imageSelections[prop.Name] = new ImageSelection(mainIdx, addIndices);
+            }
+            Log($"이미지 선택 불러옴: {_imageSelections.Count}개");
+        }
+        catch (Exception ex)
+        {
+            Log($"이미지 선택 로드 실패: {ex.Message}");
+        }
+    }
+
+    private static BitmapImage LoadThumbnail(string path)
+    {
+        var bmp = new BitmapImage();
+        bmp.BeginInit();
+        bmp.UriSource = new Uri(path);
+        bmp.DecodePixelWidth = 150;
+        bmp.CacheOption = BitmapCacheOption.OnLoad;
+        bmp.EndInit();
+        bmp.Freeze();
+        return bmp;
+    }
+
+    private static bool IsImageFile(string path)
+    {
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext is ".jpg" or ".jpeg" or ".png" or ".webp" or ".bmp";
     }
 
     #endregion
@@ -1595,6 +1917,49 @@ public class UploadResultRow
     public string MainImage { get; set; } = "";
     public string AddCount { get; set; } = "";
     public string PriceStatus { get; set; } = "";
+}
+
+public class ImageThumbnailItem : INotifyPropertyChanged
+{
+    private bool _isMain;
+    private bool _isAdditional;
+
+    public int Index { get; set; }
+    public int DisplayNumber { get; set; }
+    public string FilePath { get; set; } = "";
+    public BitmapImage? Thumbnail { get; set; }
+
+    public bool IsMain
+    {
+        get => _isMain;
+        set
+        {
+            if (_isMain == value) return;
+            _isMain = value;
+            OnPropertyChanged(nameof(IsMain));
+            OnPropertyChanged(nameof(StatusText));
+            OnPropertyChanged(nameof(StatusColor));
+        }
+    }
+
+    public bool IsAdditional
+    {
+        get => _isAdditional;
+        set
+        {
+            if (_isAdditional == value) return;
+            _isAdditional = value;
+            OnPropertyChanged(nameof(IsAdditional));
+            OnPropertyChanged(nameof(StatusText));
+            OnPropertyChanged(nameof(StatusColor));
+        }
+    }
+
+    public string StatusText => IsMain ? $"#{DisplayNumber} 대표" : IsAdditional ? $"#{DisplayNumber} 추가" : $"#{DisplayNumber}";
+    public string StatusColor => IsMain ? "#2196F3" : IsAdditional ? "#4CAF50" : "#888";
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    private void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 
 #endregion

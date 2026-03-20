@@ -80,19 +80,7 @@ public sealed class Cafe24CreateProductService
                 continue;
             }
 
-            if (IsOptionProduct(row))
-            {
-                skippedCount += 1;
-                logRows.Add(Cafe24UploadSupport.CreateLogRow(gsCode, status: "SKIP_OPTION", error: "옵션상품은 아직 신규등록 자동화를 지원하지 않습니다."));
-                continue;
-            }
-
-            if (MatchesExistingProduct(existingProducts, existingByName, productName, customProductCode, gsCode))
-            {
-                skippedCount += 1;
-                logRows.Add(Cafe24UploadSupport.CreateLogRow(gsCode, status: "SKIP_EXISTS", error: "동일 상품명 또는 자체상품코드가 이미 존재합니다."));
-                continue;
-            }
+            var isDuplicate = MatchesExistingProduct(existingProducts, existingByName, productName, customProductCode, gsCode);
 
             var request = BuildCreateRequest(row);
             if (!request.TryGetValue("product_name", out var requestProductName) || string.IsNullOrWhiteSpace(requestProductName?.ToString()))
@@ -111,6 +99,13 @@ public sealed class Cafe24CreateProductService
                 }
 
                 var priceStatus = "CREATE_ONLY";
+                // ── 옵션 추가금액 설정 ──
+                var optionAdditionals = GetValue(row, "옵션추가금");
+                if (!string.IsNullOrWhiteSpace(optionAdditionals))
+                {
+                    priceStatus = await UpdateVariantPricesAsync(tokenState, productNo, optionAdditionals, progress, index, rows.Count, productName, cancellationToken);
+                }
+
                 var imageStatus = "NO_IMAGE";
                 if (!string.IsNullOrWhiteSpace(imageRoot) && !string.IsNullOrWhiteSpace(gsCode))
                 {
@@ -118,12 +113,15 @@ public sealed class Cafe24CreateProductService
                 }
 
                 createdCount += 1;
+                var statusLabel = isDuplicate ? "CREATED_DUP" : "CREATED";
+                var dupNote = isDuplicate ? " (중복상품)" : "";
                 logRows.Add(Cafe24UploadSupport.CreateLogRow(
                     gsCode,
                     productNo: productNo.ToString(CultureInfo.InvariantCulture),
-                    status: "CREATED",
-                    priceStatus: $"{priceStatus}|{imageStatus}"));
-                progress?.Report($"[{index + 1}/{rows.Count}] {productName} 신규등록 완료 ({imageStatus})");
+                    status: statusLabel,
+                    priceStatus: $"{priceStatus}|{imageStatus}",
+                    error: isDuplicate ? "중복상품입니다." : ""));
+                progress?.Report($"[{index + 1}/{rows.Count}] {productName} 신규등록 완료{dupNote} ({imageStatus})");
 
                 existingProducts.Add(new Cafe24Product(productNo, productName, customProductCode));
                 if (!existingByName.ContainsKey(productName))
@@ -147,6 +145,54 @@ public sealed class Cafe24CreateProductService
         progress?.Report($"신규등록 로그 저장: {logPath}");
 
         return new Cafe24CreateProductsResult(workingDirectory, uploadWorkbookPath, logPath, rows.Count, createdCount, skippedCount, errorCount);
+    }
+
+    private async Task<string> UpdateVariantPricesAsync(
+        Cafe24TokenState tokenState,
+        int productNo,
+        string optionAdditionals,
+        IProgress<string>? progress,
+        int index,
+        int totalCount,
+        string productName,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var amounts = optionAdditionals.Split('|')
+                .Select(s => decimal.TryParse(s.Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out var v) ? v : 0m)
+                .ToList();
+
+            // 모든 추가금이 0이면 스킵
+            if (amounts.All(a => a == 0m))
+                return "PRICE_ALL_ZERO";
+
+            var variants = await ExecuteWithRefreshAsync(tokenState,
+                cfg => _apiClient.GetVariantsAsync(cfg, productNo, cancellationToken), cancellationToken);
+
+            if (variants.Count == 0)
+                return "NO_VARIANTS";
+
+            var updated = 0;
+            for (var i = 0; i < Math.Min(variants.Count, amounts.Count); i++)
+            {
+                if (amounts[i] == 0m)
+                    continue;
+
+                await ExecuteWithRefreshAsync(tokenState,
+                    cfg => _apiClient.UpdateVariantAsync(cfg, productNo, variants[i].VariantCode, amounts[i], cancellationToken),
+                    cancellationToken);
+                updated++;
+            }
+
+            progress?.Report($"[{index + 1}/{totalCount}] {productName} 옵션가격 {updated}건 설정");
+            return $"PRICE_OK:{updated}";
+        }
+        catch (Exception ex)
+        {
+            progress?.Report($"[{index + 1}/{totalCount}] {productName} 옵션가격 실패: {Cafe24UploadSupport.UnwrapMessage(ex)}");
+            return $"PRICE_ERR:{Cafe24UploadSupport.UnwrapMessage(ex)}";
+        }
     }
 
     private async Task<string> UploadImagesAsync(
@@ -197,7 +243,15 @@ public sealed class Cafe24CreateProductService
         AddIfNotEmpty(request, "summary_description", GetValue(row, "상품 요약설명"));
         AddIfNotEmpty(request, "simple_description", GetValue(row, "상품 간략설명"));
         AddIfNotEmpty(request, "description", GetValue(row, "상품 상세설명"));
-        AddIfNotEmpty(request, "product_tag", GetValue(row, "검색어설정"));
+        var productTag = GetValue(row, "검색어설정");
+        if (!string.IsNullOrWhiteSpace(productTag))
+        {
+            request["product_tag"] = productTag
+                .Split(new[] { ',', '/' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(t => t.Trim())
+                .Where(t => t.Length > 0)
+                .ToArray();
+        }
 
         var price = ParseDecimal(GetValue(row, "판매가"), ParseDecimal(GetValue(row, "상품가"), 0m));
         var supplyPrice = ParseDecimal(GetValue(row, "공급가"), 0m);
@@ -222,6 +276,28 @@ public sealed class Cafe24CreateProductService
                     ["new"] = ToCafe24Flag(GetValue(row, "상품분류 신상품영역"), "F")
                 }
             };
+        }
+
+        // ── 옵션 설정 ──
+        var optionUse = ToCafe24Flag(GetValue(row, "옵션사용"), "F");
+        if (optionUse == "T")
+        {
+            request["has_option"] = "T";
+            request["option_type"] = "T"; // 조합형
+
+            var optionInput = GetValue(row, "옵션입력");
+            var optionValues = ParseOptionInput(optionInput);
+            if (optionValues.Count > 0)
+            {
+                request["options"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["name"] = "옵션",
+                        ["value"] = optionValues.ToArray()
+                    }
+                };
+            }
         }
 
         return request;
@@ -353,6 +429,28 @@ public sealed class Cafe24CreateProductService
             }
         }
         return string.Empty;
+    }
+
+    /// <summary>옵션입력 "옵션{A 설명|B 설명|C 설명}" → ["A 설명", "B 설명", "C 설명"]</summary>
+    private static List<string> ParseOptionInput(string optionInput)
+    {
+        var result = new List<string>();
+        if (string.IsNullOrWhiteSpace(optionInput))
+            return result;
+
+        var match = Regex.Match(optionInput, @"\{(.+)\}");
+        if (!match.Success)
+            return result;
+
+        var inner = match.Groups[1].Value;
+        foreach (var part in inner.Split('|'))
+        {
+            var trimmed = part.Trim();
+            if (!string.IsNullOrWhiteSpace(trimmed))
+                result.Add(trimmed);
+        }
+
+        return result;
     }
 
     private static string GetValue(IReadOnlyDictionary<string, string> row, string key)

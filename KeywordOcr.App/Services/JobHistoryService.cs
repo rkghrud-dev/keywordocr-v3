@@ -43,6 +43,18 @@ public sealed class JobRecord
     [JsonPropertyName("status")]
     public string Status { get; set; } = "완료";
 
+    [JsonPropertyName("step_register")]
+    public string StepRegister { get; set; } = "";
+
+    [JsonPropertyName("step_price")]
+    public string StepPrice { get; set; } = "";
+
+    [JsonPropertyName("step_image")]
+    public string StepImage { get; set; } = "";
+
+    [JsonPropertyName("image_selected")]
+    public bool ImageSelected { get; set; }
+
     // UI 표시용
     [JsonIgnore]
     public string DisplayTime => Timestamp.ToString("MM/dd HH:mm");
@@ -53,6 +65,22 @@ public sealed class JobRecord
     [JsonIgnore]
     public string DisplaySummary =>
         $"{ProductCount}개 상품 | {Model} | {(MakeListing ? "이미지O" : "이미지X")}";
+
+    [JsonIgnore]
+    public string DisplayImageStatus => ImageSelected ? "선택완료" : "-";
+
+    [JsonIgnore]
+    public string DisplayProgress
+    {
+        get
+        {
+            var steps = new List<string>();
+            if (!string.IsNullOrEmpty(StepRegister)) steps.Add($"등록:{StepRegister}");
+            if (!string.IsNullOrEmpty(StepPrice)) steps.Add($"가격:{StepPrice}");
+            if (!string.IsNullOrEmpty(StepImage)) steps.Add($"이미지:{StepImage}");
+            return steps.Count > 0 ? string.Join(" | ", steps) : "-";
+        }
+    }
 }
 
 public sealed class JobHistoryService
@@ -111,6 +139,10 @@ public sealed class JobHistoryService
             MakeListing = source.MakeListing,
             Memo = source.Memo + " (복사)",
             Status = "대기",
+            StepRegister = source.StepRegister,
+            StepPrice = source.StepPrice,
+            StepImage = source.StepImage,
+            ImageSelected = source.ImageSelected,
         };
         Add(clone);
         return clone;
