@@ -531,12 +531,44 @@ public partial class MainWindow : Window
             var bridge = new PythonPipelineBridgeService(_v3Root, _legacyRoot);
             var progress = new Progress<string>(msg => Log(msg));
 
-            Log("전체 파이프라인 실행 시작...");
-            StatusText.Text = "실행 중...";
-            ProgressBar.IsIndeterminate = true;
+            if (settings.MakeListing)
+            {
+                // ── 2-Phase 실행: 이미지 먼저 → 피커 → 분석 병렬 ──
+                Log("Phase 1: 이미지 다운로드 + 가공 시작...");
+                StatusText.Text = "Phase 1: 이미지 처리 중...";
+                ProgressBar.IsIndeterminate = true;
 
-            var result = await bridge.RunPipelineAsync(inputFile, settings, progress, _cts.Token);
-            OnPipelineComplete(result);
+                var phase1 = await bridge.RunPipelineAsync(
+                    inputFile, settings, progress, _cts.Token, phase: "images");
+
+                _lastOutputRoot = phase1.OutputRoot;
+                Log($"Phase 1 완료 — 이미지 폴더: {phase1.OutputRoot}");
+
+                // Phase 2: 분석 백그라운드 시작
+                Log("Phase 2: OCR + Vision + 키워드 생성 (백그라운드)...");
+                StatusText.Text = "이미지 선택 중... (백그라운드에서 키워드 생성 중)";
+                var phase2Progress = new Progress<string>(msg => Log($"[Phase2] {msg}"));
+                var phase2Task = bridge.RunPipelineAsync(
+                    inputFile, settings, phase2Progress, _cts.Token,
+                    phase: "analysis", exportRoot: phase1.OutputRoot);
+
+                // 이미지 선택 탭으로 전환 + 이미지 로드
+                LoadListingImagesFromRoot(phase1.OutputRoot);
+
+                // Phase 2 완료 대기
+                var phase2Result = await phase2Task;
+                OnPipelineComplete(phase2Result);
+            }
+            else
+            {
+                // ── 기존 단일 실행 (이미지 없이 키워드만) ──
+                Log("전체 파이프라인 실행 시작...");
+                StatusText.Text = "실행 중...";
+                ProgressBar.IsIndeterminate = true;
+
+                var result = await bridge.RunPipelineAsync(inputFile, settings, progress, _cts.Token);
+                OnPipelineComplete(result);
+            }
         }
         catch (OperationCanceledException) { Log("작업 취소됨"); StatusText.Text = "취소됨"; }
         catch (Exception ex) { HandlePipelineError(ex); }
@@ -1111,6 +1143,33 @@ public partial class MainWindow : Window
         Log($"이력 삭제: {job.DisplaySource}");
     }
 
+    private bool _historyAllSelected = false;
+    private void HistorySelectAll_Click(object sender, RoutedEventArgs e)
+    {
+        if (_historyAllSelected)
+            HistoryGrid.UnselectAll();
+        else
+            HistoryGrid.SelectAll();
+        _historyAllSelected = !_historyAllSelected;
+    }
+
+    private void HistoryBulkDelete_Click(object sender, RoutedEventArgs e)
+    {
+        var selected = HistoryGrid.SelectedItems.Cast<JobRecord>().ToList();
+        if (selected.Count == 0) { MessageBox.Show("삭제할 이력을 선택하세요.", "알림"); return; }
+
+        var confirm = MessageBox.Show(
+            $"{selected.Count}개 이력을 삭제하시겠습니까?",
+            "선택 삭제 확인", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        foreach (var job in selected)
+            _jobHistory?.Delete(job.Id);
+        _historyAllSelected = false;
+        RefreshHistoryGrid();
+        Log($"이력 {selected.Count}개 일괄 삭제");
+    }
+
     private void HistoryOpenCafe24Excel_Click(object sender, RoutedEventArgs e)
     {
         var job = GetSelectedJob();
@@ -1664,6 +1723,14 @@ public partial class MainWindow : Window
     #endregion
 
     #region ═══ 이미지 선택 ═══
+
+    /// <summary>Phase 1 완료 후 이미지 로드 + 탭 전환</summary>
+    private void LoadListingImagesFromRoot(string outputRoot)
+    {
+        _lastOutputRoot = outputRoot;
+        LoadImages_Click(this, new RoutedEventArgs());
+        ImageSelectionTab.IsSelected = true;
+    }
 
     private void LoadImages_Click(object sender, RoutedEventArgs e)
     {

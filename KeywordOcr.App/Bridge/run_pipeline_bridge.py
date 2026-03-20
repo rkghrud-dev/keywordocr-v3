@@ -66,6 +66,8 @@ def main() -> int:
     parser.add_argument('--jpeg-q-min', default='88')
     parser.add_argument('--jpeg-q-max', default='92')
     parser.add_argument('--flip-lr', default='true')
+    parser.add_argument('--phase', default='full', choices=['full', 'images', 'analysis'])
+    parser.add_argument('--export-root', default='')
     args = parser.parse_args()
 
     legacy_root = Path(args.legacy_root).resolve()
@@ -126,6 +128,8 @@ def main() -> int:
         jpeg_q_min=int(args.jpeg_q_min),
         jpeg_q_max=int(args.jpeg_q_max),
         do_flip_lr=_to_bool(args.flip_lr),
+        phase=args.phase,
+        export_root_override=str(args.export_root or '').strip(),
     )
 
     _status('작업 시작')

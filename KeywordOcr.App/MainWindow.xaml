@@ -305,7 +305,7 @@
                         <DataGrid x:Name="HistoryGrid" AutoGenerateColumns="False"
                                   HeadersVisibility="Column" IsReadOnly="True"
                                   GridLinesVisibility="Horizontal" BorderThickness="0"
-                                  FontSize="11" SelectionMode="Single"
+                                  FontSize="11" SelectionMode="Extended"
                                   CanUserSortColumns="True"
                                   MouseDoubleClick="HistoryGrid_DoubleClick">
                             <DataGrid.ContextMenu>
@@ -328,6 +328,8 @@
                                 </ContextMenu>
                             </DataGrid.ContextMenu>
                             <DataGrid.Columns>
+                                <DataGridCheckBoxColumn Header="✓" Width="30"
+                                    Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=DataGridRow}}"/>
                                 <DataGridTextColumn Header="일시" Binding="{Binding DisplayTime}" Width="90"/>
                                 <DataGridTextColumn Header="파일" Binding="{Binding DisplaySource}" Width="160"/>
                                 <DataGridTextColumn Header="요약" Binding="{Binding DisplaySummary}" Width="*"/>
@@ -371,6 +373,16 @@
                                 Background="#c44536" Foreground="White" FontSize="11"
                                 Style="{StaticResource SmallButton}"
                                 Click="HistoryDelete_Click"/>
+                        <!-- 벌크 삭제 영역 (오른쪽 끝) -->
+                        <StackPanel Grid.Column="8" Orientation="Horizontal" HorizontalAlignment="Right" Margin="70,0,0,0">
+                            <Button Content="전체선택" Width="70" Height="32"
+                                    Background="#e0e0e0" Foreground="#333" FontSize="11"
+                                    Style="{StaticResource SmallButton}"
+                                    Click="HistorySelectAll_Click"/>
+                            <Button Content="선택삭제" Width="70" Height="32" Margin="4,0,0,0"
+                                    Background="#c44536" Foreground="White" FontSize="11"
+                                    Style="{StaticResource SmallButton}"
+                                    Click="HistoryBulkDelete_Click"/></StackPanel>
                     </Grid>
                 </Grid>
             </TabItem>

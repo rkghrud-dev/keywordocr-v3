@@ -25,7 +25,9 @@ public sealed class PythonPipelineBridgeService
         string sourcePath,
         ListingImageSettings listingSettings,
         IProgress<string>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string phase = "full",
+        string exportRoot = "")
     {
         var scriptPath = ResolveScriptPath();
 
@@ -65,6 +67,9 @@ public sealed class PythonPipelineBridgeService
         AddArg(psi, "--jpeg-q-min", listingSettings.JpegQualityMin.ToString());
         AddArg(psi, "--jpeg-q-max", listingSettings.JpegQualityMax.ToString());
         AddArg(psi, "--flip-lr", ToBoolText(listingSettings.FlipLeftRight));
+        AddArg(psi, "--phase", phase);
+        if (!string.IsNullOrEmpty(exportRoot))
+            AddArg(psi, "--export-root", exportRoot);
         psi.Environment["PYTHONIOENCODING"] = "utf-8";
         psi.Environment["PYTHONUTF8"] = "1";
 
@@ -136,7 +141,8 @@ public sealed class PythonPipelineBridgeService
                     : detail);
         }
 
-        if (result is null || string.IsNullOrWhiteSpace(result.OutputFile))
+        // phase=images 이면 OutputFile이 빈 문자열이므로 OutputRoot만 체크
+        if (result is null || string.IsNullOrWhiteSpace(result.OutputRoot))
         {
             throw new InvalidDataException("Python 파이프라인 결과를 읽지 못했습니다.");
         }
