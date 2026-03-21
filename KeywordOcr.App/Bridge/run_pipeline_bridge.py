@@ -68,6 +68,7 @@ def main() -> int:
     parser.add_argument('--flip-lr', default='true')
     parser.add_argument('--phase', default='full', choices=['full', 'images', 'analysis'])
     parser.add_argument('--export-root', default='')
+    parser.add_argument('--model', default='claude-sonnet-4-6')
     args = parser.parse_args()
 
     legacy_root = Path(args.legacy_root).resolve()
@@ -82,8 +83,8 @@ def main() -> int:
         file_path=str(Path(args.source).resolve()),
         img_tag='',
         tesseract_path='',
-        model_keyword='claude-sonnet-4-6',
-        model_longtail='claude-sonnet-4-6',
+        model_keyword=args.model,
+        model_longtail=args.model,
         max_words=24,
         max_len=140,
         min_len=90,

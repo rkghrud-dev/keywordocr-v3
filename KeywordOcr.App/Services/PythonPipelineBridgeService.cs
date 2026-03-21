@@ -27,7 +27,8 @@ public sealed class PythonPipelineBridgeService
         IProgress<string>? progress = null,
         CancellationToken cancellationToken = default,
         string phase = "full",
-        string exportRoot = "")
+        string exportRoot = "",
+        string model = "")
     {
         var scriptPath = ResolveScriptPath();
 
@@ -70,6 +71,8 @@ public sealed class PythonPipelineBridgeService
         AddArg(psi, "--phase", phase);
         if (!string.IsNullOrEmpty(exportRoot))
             AddArg(psi, "--export-root", exportRoot);
+        if (!string.IsNullOrEmpty(model))
+            AddArg(psi, "--model", model);
         psi.Environment["PYTHONIOENCODING"] = "utf-8";
         psi.Environment["PYTHONUTF8"] = "1";
 

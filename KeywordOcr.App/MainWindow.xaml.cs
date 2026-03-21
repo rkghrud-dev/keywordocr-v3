@@ -530,16 +530,17 @@ public partial class MainWindow : Window
             var settings = BuildListingSettings();
             var bridge = new PythonPipelineBridgeService(_v3Root, _legacyRoot);
             var progress = new Progress<string>(msg => Log(msg));
+            var selectedModel = (ModelCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
 
             if (settings.MakeListing)
             {
                 // ── 2-Phase 실행: 이미지 먼저 → 피커 → 분석 병렬 ──
-                Log("Phase 1: 이미지 다운로드 + 가공 시작...");
+                Log($"Phase 1: 이미지 다운로드 + 가공 시작... (모델: {selectedModel})");
                 StatusText.Text = "Phase 1: 이미지 처리 중...";
                 ProgressBar.IsIndeterminate = true;
 
                 var phase1 = await bridge.RunPipelineAsync(
-                    inputFile, settings, progress, _cts.Token, phase: "images");
+                    inputFile, settings, progress, _cts.Token, phase: "images", model: selectedModel);
 
                 _lastOutputRoot = phase1.OutputRoot;
                 Log($"Phase 1 완료 — 이미지 폴더: {phase1.OutputRoot}");
@@ -550,7 +551,7 @@ public partial class MainWindow : Window
                 var phase2Progress = new Progress<string>(msg => Log($"[Phase2] {msg}"));
                 var phase2Task = bridge.RunPipelineAsync(
                     inputFile, settings, phase2Progress, _cts.Token,
-                    phase: "analysis", exportRoot: phase1.OutputRoot);
+                    phase: "analysis", exportRoot: phase1.OutputRoot, model: selectedModel);
 
                 // 이미지 선택 탭으로 전환 + 이미지 로드
                 LoadListingImagesFromRoot(phase1.OutputRoot);
@@ -562,11 +563,11 @@ public partial class MainWindow : Window
             else
             {
                 // ── 기존 단일 실행 (이미지 없이 키워드만) ──
-                Log("전체 파이프라인 실행 시작...");
+                Log($"전체 파이프라인 실행 시작... (모델: {selectedModel})");
                 StatusText.Text = "실행 중...";
                 ProgressBar.IsIndeterminate = true;
 
-                var result = await bridge.RunPipelineAsync(inputFile, settings, progress, _cts.Token);
+                var result = await bridge.RunPipelineAsync(inputFile, settings, progress, _cts.Token, model: selectedModel);
                 OnPipelineComplete(result);
             }
         }
@@ -588,12 +589,13 @@ public partial class MainWindow : Window
             var settings = BuildListingSettings() with { MakeListing = false };
             var bridge = new PythonPipelineBridgeService(_v3Root, _legacyRoot);
             var progress = new Progress<string>(msg => Log(msg));
+            var selectedModel = (ModelCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
 
-            Log("키워드만 생성 시작...");
+            Log($"키워드만 생성 시작... (모델: {selectedModel})");
             StatusText.Text = "키워드 생성 중...";
             ProgressBar.IsIndeterminate = true;
 
-            var result = await bridge.RunPipelineAsync(inputFile, settings, progress, _cts.Token);
+            var result = await bridge.RunPipelineAsync(inputFile, settings, progress, _cts.Token, model: selectedModel);
             OnPipelineComplete(result);
         }
         catch (OperationCanceledException) { Log("작업 취소됨"); StatusText.Text = "취소됨"; }
@@ -614,12 +616,13 @@ public partial class MainWindow : Window
             var settings = BuildListingSettings();
             var bridge = new PythonPipelineBridgeService(_v3Root, _legacyRoot);
             var progress = new Progress<string>(msg => Log(msg));
+            var selectedModel = (ModelCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
 
-            Log("대표이미지만 생성 시작...");
+            Log($"대표이미지만 생성 시작... (모델: {selectedModel})");
             StatusText.Text = "대표이미지 생성 중...";
             ProgressBar.IsIndeterminate = true;
 
-            var result = await bridge.RunPipelineAsync(inputFile, settings, progress, _cts.Token);
+            var result = await bridge.RunPipelineAsync(inputFile, settings, progress, _cts.Token, model: selectedModel);
             OnPipelineComplete(result);
         }
         catch (OperationCanceledException) { Log("작업 취소됨"); StatusText.Text = "취소됨"; }
