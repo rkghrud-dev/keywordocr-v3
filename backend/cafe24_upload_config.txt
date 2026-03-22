@@ -1,0 +1,11 @@
+DATE_TAG=20260223
+MAIN_INDEX=2
+ADD_START=3
+ADD_MAX=10
+EXPORT_DIR=C:\code\exports\20260223_b
+IMAGE_ROOT=C:/code/exports/20260223_b/listing_images/20260223
+RETRY_COUNT=1
+RETRY_DELAY=1.0
+MATCH_MODE=PREFIX
+MATCH_PREFIX=20
+PRICE_DATA=C:\Users\rkghr\Desktop\keywordocr\cafe24_price_upload_data.json
