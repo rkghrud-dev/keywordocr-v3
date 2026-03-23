@@ -658,7 +658,7 @@
                                                     Background="#f8f9fa"
                                                     MouseLeftButtonDown="Thumbnail_LeftClick"
                                                     MouseRightButtonDown="Thumbnail_RightClick"
-                                                    Cursor="Hand" ToolTip="좌클릭: 대표이미지 / 우클릭: 추가이미지 토글">
+                                                    Cursor="Hand" ToolTip="좌클릭: 대표이미지 / 우클릭: 추가이미지 / 더블클릭: 대표+다음 상품">
                                                 <StackPanel>
                                                     <Image Source="{Binding Thumbnail}"
                                                            Width="140" Height="140"
@@ -704,7 +704,222 @@
             </TabItem>
 
 
-            <!-- ════════════ TAB 6: 설정 ════════════ -->
+            <!-- ════════════ TAB 6: 테스트실행 (OCR Only + LLM 수동) ════════════ -->
+            <TabItem Header="  테스트실행  " FontSize="13" FontWeight="SemiBold">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16,12">
+                    <StackPanel>
+                        <!-- 파일 선택 -->
+                        <TextBlock Text="파일 선택" FontSize="13" FontWeight="Bold" Margin="0,0,0,6"/>
+                        <Border Background="White" BorderBrush="#ccc"
+                                BorderThickness="2" CornerRadius="8" MinHeight="56" Margin="0,0,0,10"
+                                AllowDrop="True" Drop="DropZone_Drop" DragEnter="DropZone_DragEnter"
+                                DragLeave="DropZone_DragLeave">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="14,10">
+                                    <TextBlock Text="선택된 파일:" FontSize="12" Foreground="#888"/>
+                                    <TextBlock x:Name="TestDropZoneFile" Text="(파일을 선택하세요)" FontSize="11" Foreground="#1a1a2e"
+                                               FontWeight="SemiBold" Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/>
+                                </StackPanel>
+                                <Button Grid.Column="1" Content="파일 선택" Width="90" Height="34" Margin="0,0,10,0"
+                                        Background="#e0e0e0" Foreground="#333" FontSize="12"
+                                        Style="{StaticResource SmallButton}" Click="SelectFile_Click"/>
+                            </Grid>
+                        </Border>
+
+                        <!-- 상품코드 선택 -->
+                        <Border x:Name="TestProductListPanel" Background="White" BorderBrush="#ddd"
+                                BorderThickness="1" CornerRadius="6" Margin="0,0,0,10"
+                                Visibility="Collapsed" MaxHeight="180">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <Grid Grid.Row="0" Margin="10,6,10,4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="처리할 상품 선택" FontSize="11" FontWeight="Bold"
+                                               Foreground="#555" VerticalAlignment="Center"/>
+                                    <TextBlock x:Name="TestProductCountText" Grid.Column="1" FontSize="11" Foreground="#888"
+                                               VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                    <Button Grid.Column="2" Content="전체선택" FontSize="10" Padding="6,2" Margin="0,0,4,0"
+                                            Background="Transparent" BorderBrush="#ccc" BorderThickness="1"
+                                            Cursor="Hand" Click="SelectAll_Click"/>
+                                    <Button Grid.Column="3" Content="전체해제" FontSize="10" Padding="6,2"
+                                            Background="Transparent" BorderBrush="#ccc" BorderThickness="1"
+                                            Cursor="Hand" Click="DeselectAll_Click"/>
+                                </Grid>
+                                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="6,0,6,6">
+                                    <ItemsControl x:Name="TestProductList">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <CheckBox IsChecked="{Binding IsSelected}" Margin="4,2" FontSize="11"
+                                                          Checked="ProductCheck_Changed" Unchecked="ProductCheck_Changed">
+                                                    <CheckBox.Content>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding Code}" FontWeight="SemiBold"
+                                                                       Foreground="#1a1a2e" Width="90"/>
+                                                            <TextBlock Text="{Binding Name}" Foreground="#555"
+                                                                       TextTrimming="CharacterEllipsis" MaxWidth="500"/>
+                                                        </StackPanel>
+                                                    </CheckBox.Content>
+                                                </CheckBox>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </Grid>
+                        </Border>
+
+                        <!-- 1차 가공 -->
+                        <TextBlock Text="1차 가공 (OCR + 이미지, LLM 스킵)" FontSize="14" FontWeight="Bold" Margin="0,4,0,4"/>
+                        <TextBlock FontSize="11" Foreground="#888" Margin="0,0,0,10" TextWrapping="Wrap"
+                                   Text="OCR + 이미지가공 + 옵션/가격 처리만 실행. 키워드/검색어 생성은 건너뛰고 keyword_skill.md와 함께 엑셀을 출력합니다."/>
+
+                        <!-- 분할 설정 -->
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Codex 분할 단위:" FontSize="11" Foreground="#555"
+                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <ComboBox x:Name="TestChunkSizeCombo" Grid.Column="1" Width="80" Height="28" FontSize="11"
+                                      SelectedIndex="1">
+                                <ComboBoxItem Content="5개"/>
+                                <ComboBoxItem Content="10개"/>
+                                <ComboBoxItem Content="15개"/>
+                                <ComboBoxItem Content="20개"/>
+                                <ComboBoxItem Content="분할안함"/>
+                            </ComboBox>
+                            <TextBlock Grid.Column="2" Text="(병렬 실행 시 10개 권장)" FontSize="10" Foreground="#aaa"
+                                       VerticalAlignment="Center" Margin="8,0,0,0"/>
+                        </Grid>
+
+                        <!-- OCR 제외 옵션 -->
+                        <Border Background="#fff3cd" CornerRadius="4" Padding="8,4" Margin="0,0,0,8"
+                                BorderBrush="#ffc107" BorderThickness="1"
+                                x:Name="TestSkipOcrPanel" Visibility="Visible">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <CheckBox x:Name="TestSkipOcrCheck" Content="OCR 제외 (기존 결과 재사용)"
+                                              FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center"
+                                              Checked="TestSkipOcrCheck_Changed" Unchecked="TestSkipOcrCheck_Changed"/>
+                                    <TextBlock Text=" — OCR 비용/시간 절약, skill.md + 청크만 재생성"
+                                               FontSize="10" Foreground="#856404" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,4,0,0"
+                                            x:Name="TestSkipOcrFolderPanel" Visibility="Collapsed">
+                                    <TextBlock Text="기존 폴더:" FontSize="10" Foreground="#856404"
+                                               VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                    <TextBlock x:Name="TestSkipOcrFolderText" Text="(선택 안됨)" FontSize="10"
+                                               Foreground="#333" VerticalAlignment="Center" Margin="0,0,8,0"
+                                               TextTrimming="CharacterEllipsis" MaxWidth="350"/>
+                                    <Button Content="폴더 선택" Height="22" FontSize="10" Padding="8,0"
+                                            Click="TestSkipOcrSelectFolder_Click"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Grid Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="8"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="TestRunOcrOnlyButton" Grid.Column="0"
+                                    Content="1차 가공 실행" Height="36"
+                                    Background="#6c5ce7" Foreground="White" FontSize="13" FontWeight="Bold"
+                                    Click="TestRunOcrOnly_Click"/>
+                            <Button x:Name="TestOpenOutputButton" Grid.Column="2"
+                                    Content="결과 폴더 열기" Height="36"
+                                    Background="#dfe6e9" Foreground="#333" FontSize="13"
+                                    Click="TestOpenOutput_Click" IsEnabled="False"/>
+                        </Grid>
+
+                        <!-- 결과 경로 표시 -->
+                        <Border Background="#f8f9fa" CornerRadius="6" Padding="12,8" Margin="0,0,0,8"
+                                BorderBrush="#eee" BorderThickness="1">
+                            <StackPanel>
+                                <TextBlock x:Name="TestOutputPathText" Text="결과 폴더: (미실행)"
+                                           FontSize="11" Foreground="#888" TextWrapping="Wrap"/>
+                                <TextBlock x:Name="TestSkillMdPathText" Text=""
+                                           FontSize="11" Foreground="#6c5ce7" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Codex 병렬 실행 명령어 -->
+                        <Border x:Name="TestCodexCmdPanel" Background="#1e1e2e" CornerRadius="6" Padding="12,10"
+                                Margin="0,0,0,16" BorderBrush="#6c5ce7" BorderThickness="1" Visibility="Collapsed">
+                            <StackPanel>
+                                <TextBlock x:Name="TestCodexCmdTitle" Text="" FontSize="12" FontWeight="Bold"
+                                           Foreground="#a29bfe" Margin="0,0,0,4"/>
+                                <TextBlock Text="각 명령어를 별도 PowerShell 창에 붙여넣으세요" FontSize="10" Foreground="#888"
+                                           Margin="0,0,0,8"/>
+                                <ItemsControl x:Name="TestCodexCmdList"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                    <Button Content="전체 명령어 복사" Height="28" FontSize="11"
+                                            Background="#6c5ce7" Foreground="White" HorizontalAlignment="Left"
+                                            Padding="16,0" Margin="0,0,8,0" Click="TestCopyAllCodexCmd_Click"/>
+                                    <Button Content="llm_chunks 폴더 열기" Height="28" FontSize="11"
+                                            Background="#444466" Foreground="White" HorizontalAlignment="Left"
+                                            Padding="16,0" Click="TestOpenChunksFolder_Click"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 구분선 -->
+                        <Border Height="1" Background="#ddd" Margin="0,0,0,16"/>
+
+                        <!-- LLM 결과 → Cafe24 업로드 -->
+                        <TextBlock Text="Cafe24 업로드 (LLM 결과 반영)" FontSize="14" FontWeight="Bold" Margin="0,0,0,4"/>
+                        <TextBlock FontSize="11" Foreground="#888" Margin="0,0,0,10" TextWrapping="Wrap"
+                                   Text="LLM이 키워드를 채운 엑셀을 불러온 뒤 확인 후 Cafe24에 업로드합니다."/>
+
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="TestLlmResultFileText" Grid.Column="0"
+                                       Text="LLM 결과 파일: (없음)" FontSize="11" Foreground="#888"
+                                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                            <Button x:Name="TestLoadLlmResultButton" Grid.Column="1"
+                                    Content="LLM 결과 불러오기" Width="140" Height="30"
+                                    Background="#457b9d" Foreground="White" FontSize="11"
+                                    Click="TestLoadLlmResult_Click"/>
+                        </Grid>
+
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="8"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="TestCafe24CreateButton" Grid.Column="0"
+                                    Content="Cafe24 신규등록 (API)" Height="36"
+                                    Background="#2d6a4f" Foreground="White" FontSize="13" FontWeight="Bold"
+                                    Click="TestCafe24Create_Click" IsEnabled="False"/>
+                            <Button x:Name="TestCafe24UploadButton" Grid.Column="2"
+                                    Content="Cafe24 이미지+가격 업로드" Height="36"
+                                    Background="#c44536" Foreground="White" FontSize="13" FontWeight="Bold"
+                                    Click="TestCafe24Upload_Click" IsEnabled="False"/>
+                        </Grid>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+
+            <!-- ════════════ TAB 7: 설정 ════════════ -->
             <TabItem Header="  설정  " FontSize="13" FontWeight="SemiBold">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16,12">
                     <StackPanel>

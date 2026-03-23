@@ -19,6 +19,11 @@ internal static class Cafe24UploadSupport
     public static string ResolveWorkingDirectory(string sourcePath, string exportRoot, Cafe24UploadOptions options)
     {
         var searchRoots = new List<string>();
+        // exportRoot를 우선 탐색 (LLM 결과 파일이 하위 폴더에 있을 수 있으므로)
+        if (!string.IsNullOrWhiteSpace(exportRoot))
+        {
+            searchRoots.Add(exportRoot);
+        }
         if (File.Exists(sourcePath))
         {
             var sourceDirectory = Path.GetDirectoryName(sourcePath);
@@ -26,10 +31,6 @@ internal static class Cafe24UploadSupport
             {
                 searchRoots.Add(sourceDirectory);
             }
-        }
-        if (!string.IsNullOrWhiteSpace(exportRoot))
-        {
-            searchRoots.Add(exportRoot);
         }
         if (!string.IsNullOrWhiteSpace(options.ExportDir))
         {
@@ -111,6 +112,47 @@ internal static class Cafe24UploadSupport
             })
             .OrderBy(directory => directory.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    /// <summary>GS코드 → (상품명, 검색어설정, 검색키워드) 매핑을 엑셀에서 읽어옵니다.</summary>
+    public static Dictionary<string, (string ProductName, string ProductTag, string SearchKeyword)> ReadProductKeywordData(string workbookPath)
+    {
+        var result = new Dictionary<string, (string, string, string)>(StringComparer.OrdinalIgnoreCase);
+        using var workbook = WorkbookFileLoader.OpenReadOnly(workbookPath);
+        var worksheet = workbook.Worksheets.Contains("분리추출후") ? workbook.Worksheet("분리추출후") : workbook.Worksheet(1);
+        var headers = BuildHeaderMap(worksheet);
+
+        if (!headers.TryGetValue("상품명", out var nameCol)) return result;
+        headers.TryGetValue("검색어설정", out var tagCol);
+        headers.TryGetValue("검색키워드", out var kwCol);
+        headers.TryGetValue("자체 상품코드", out var codeCol);
+
+        var lastRow = worksheet.LastRowUsed()?.RowNumber() ?? 1;
+        for (var row = 2; row <= lastRow; row++)
+        {
+            var name = worksheet.Cell(row, nameCol).GetFormattedString().Trim();
+            if (string.IsNullOrWhiteSpace(name)) continue;
+
+            // GS코드 추출: 상품명 → 자체 상품코드 순으로 시도
+            var gsMatch = System.Text.RegularExpressions.Regex.Match(name, @"GS\d{7,9}[A-Z]?");
+            var gs9 = gsMatch.Success ? gsMatch.Value : "";
+            if (string.IsNullOrWhiteSpace(gs9) && codeCol > 0)
+            {
+                var code = worksheet.Cell(row, codeCol).GetFormattedString().Trim();
+                var codeMatch = System.Text.RegularExpressions.Regex.Match(code, @"GS\d{7,9}[A-Z]?");
+                gs9 = codeMatch.Success ? codeMatch.Value : "";
+            }
+            if (gs9.Length > 9) gs9 = gs9[..9];
+            if (string.IsNullOrWhiteSpace(gs9)) continue;
+
+            var tag = tagCol > 0 ? worksheet.Cell(row, tagCol).GetFormattedString().Trim() : "";
+            var kw = kwCol > 0 ? worksheet.Cell(row, kwCol).GetFormattedString().Trim() : "";
+
+            if (!result.ContainsKey(gs9))
+                result[gs9] = (name, tag, kw);
+        }
+
+        return result;
     }
 
     public static List<string> ReadUploadProductNames(string workbookPath)

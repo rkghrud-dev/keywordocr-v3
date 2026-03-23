@@ -43,7 +43,11 @@ public sealed class Cafe24UploadService
             throw new FileNotFoundException("업로드용 엑셀을 찾지 못했습니다. 먼저 업로드용 엑셀을 생성해 주세요.", workingDirectory);
         }
 
+        // sourcePath가 LLM 결과 파일이면 키워드 데이터를 거기서 읽기
+        var keywordSourcePath = File.Exists(sourcePath) && sourcePath.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)
+            ? sourcePath : uploadWorkbookPath;
         var uploadNames = Cafe24UploadSupport.ReadUploadProductNames(uploadWorkbookPath);
+        var keywordData = Cafe24UploadSupport.ReadProductKeywordData(keywordSourcePath);
         var gptWorkbookPath = Cafe24UploadSupport.FindLatestFileInDirectory(workingDirectory, "상품전처리GPT_*.xlsx");
         var optionPriceMap = Cafe24UploadSupport.LoadOptionSupplyPrices(gptWorkbookPath ?? uploadWorkbookPath);
         var priceReview = Cafe24UploadSupport.LoadPriceReview(options.PriceDataPath);
@@ -182,6 +186,29 @@ public sealed class Cafe24UploadService
                 continue;
             }
 
+            // ── 상품명 / 검색어설정 / 검색키워드 업데이트 ──
+            var nameStatus = "";
+            if (keywordData.TryGetValue(gs9, out var kwInfo) && !string.IsNullOrWhiteSpace(kwInfo.ProductName))
+            {
+                try
+                {
+                    // 상품명에서 GS코드 제거 (이미 제거된 경우도 안전)
+                    var cleanName = System.Text.RegularExpressions.Regex.Replace(kwInfo.ProductName, @"GS\d{7,9}[A-Z]?\s*", "").Trim();
+                    if (!string.IsNullOrWhiteSpace(cleanName))
+                    {
+                        await ExecuteWithRefreshAsync(tokenState, cfg =>
+                            _apiClient.UpdateProductAsync(cfg, matchedProduct.ProductNo, cleanName, kwInfo.ProductTag, kwInfo.SearchKeyword, cancellationToken), cancellationToken);
+                        nameStatus = "NAME_OK";
+                        progress?.Report($"[{index + 1}/{folders.Count}] {gs} 상품명+검색어 업데이트 완료");
+                    }
+                }
+                catch (Exception nameEx)
+                {
+                    nameStatus = $"NAME_ERROR: {Cafe24UploadSupport.UnwrapMessage(nameEx)}";
+                    progress?.Report($"[{index + 1}/{folders.Count}] {gs} 상품명 업데이트 실패: {nameStatus}");
+                }
+            }
+
             successCount += 1;
             logRows.Add(Cafe24UploadSupport.CreateLogRow(
                 gs,
@@ -190,8 +217,9 @@ public sealed class Cafe24UploadService
                 mainImagePath: mainImagePath,
                 additionalImagePaths: additionalImagePaths,
                 selection: selection,
-                priceStatus: priceStatus));
-            progress?.Report($"[{index + 1}/{folders.Count}] {gs} 업로드 완료 ({priceStatus})");
+                priceStatus: string.IsNullOrEmpty(nameStatus) ? priceStatus : $"{priceStatus}|{nameStatus}"));
+            progress?.Report($"[{index + 1}/{folders.Count}] {gs} 업로드 완료 ({priceStatus}{(string.IsNullOrEmpty(nameStatus) ? "" : $"|{nameStatus}")})");
+
         }
 
         var logPath = Cafe24UploadSupport.WriteLogWorkbook(logRows, workingDirectory, options.LogPath);

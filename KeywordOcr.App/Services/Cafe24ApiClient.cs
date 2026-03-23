@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -203,6 +204,37 @@ internal sealed class Cafe24ApiClient
     {
         var url = $"https://{config.MallId}.cafe24api.com/api/v2/admin/products/{productNo}/additionalimages?shop_no={Uri.EscapeDataString(config.ShopNo)}";
         using var request = CreateRequest(HttpMethod.Delete, url, config);
+        using var _ = await SendJsonAsync(request, cancellationToken);
+    }
+
+    public async Task UpdateProductAsync(Cafe24TokenConfig config, int productNo, string? productName, string? productTag, string? searchKeyword, CancellationToken cancellationToken)
+    {
+        var url = $"https://{config.MallId}.cafe24api.com/api/v2/admin/products/{productNo}";
+        var requestBody = new Dictionary<string, object>();
+        if (!string.IsNullOrWhiteSpace(productName))
+            requestBody["product_name"] = productName;
+        if (!string.IsNullOrWhiteSpace(productTag))
+        {
+            // Cafe24 API는 product_tag를 배열로 요구
+            requestBody["product_tag"] = productTag
+                .Split(new[] { ',', '/' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(t => t.Trim())
+                .Where(t => t.Length > 0)
+                .ToArray();
+        }
+        if (!string.IsNullOrWhiteSpace(searchKeyword))
+            requestBody["search_keyword"] = searchKeyword;
+
+        if (requestBody.Count == 0) return;
+
+        var shopNo = int.TryParse(config.ShopNo, NumberStyles.Integer, CultureInfo.InvariantCulture, out var sn) ? sn : 1;
+        var payload = new Dictionary<string, object>
+        {
+            ["shop_no"] = shopNo,
+            ["request"] = requestBody
+        };
+
+        using var request = CreateJsonRequest(HttpMethod.Put, url, config, payload);
         using var _ = await SendJsonAsync(request, cancellationToken);
     }
 

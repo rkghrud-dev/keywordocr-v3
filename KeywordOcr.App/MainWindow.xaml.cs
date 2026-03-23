@@ -138,6 +138,7 @@ public partial class MainWindow : Window
         _sourcePath = filePath;
         DropZoneFile.Text = filePath;
         DropZoneText.Text = "선택된 파일:";
+        TestDropZoneFile.Text = filePath;
         Log($"파일 선택: {Path.GetFileName(filePath)}");
         LoadProductList(filePath);
     }
@@ -156,6 +157,7 @@ public partial class MainWindow : Window
             {
                 Log("상품코드를 찾지 못했습니다. 전체 파일이 처리됩니다.");
                 ProductListPanel.Visibility = Visibility.Collapsed;
+                TestProductListPanel.Visibility = Visibility.Collapsed;
                 SetPipelineEnabled(true);
                 return;
             }
@@ -164,6 +166,8 @@ public partial class MainWindow : Window
                 _products.Add(new ProductItem { Code = code, Name = name, IsSelected = true });
 
             ProductListPanel.Visibility = Visibility.Visible;
+            TestProductListPanel.Visibility = Visibility.Visible;
+            TestProductList.ItemsSource = _products;
             UpdateProductCount();
             SetPipelineEnabled(true);
             Log($"상품 {items.Count}개 로드됨");
@@ -172,6 +176,7 @@ public partial class MainWindow : Window
         {
             Log($"파일 읽기 오류: {ex.Message}");
             ProductListPanel.Visibility = Visibility.Collapsed;
+            TestProductListPanel.Visibility = Visibility.Collapsed;
             SetPipelineEnabled(true);
         }
     }
@@ -320,7 +325,9 @@ public partial class MainWindow : Window
     private void UpdateProductCount()
     {
         var selected = _products.Count(p => p.IsSelected);
-        ProductCountText.Text = $"({selected}/{_products.Count} 선택)";
+        var text = $"({selected}/{_products.Count} 선택)";
+        ProductCountText.Text = text;
+        TestProductCountText.Text = text;
     }
 
     #endregion
@@ -692,6 +699,459 @@ public partial class MainWindow : Window
 
     #endregion
 
+    #region ═══ 테스트실행 (OCR Only + LLM 수동) ═══
+
+    private string? _testOutputRoot;
+    private string? _testLlmResultFile;
+    private List<string> _testLlmResultFiles = new();
+    private string? _testSkipOcrFolder;
+
+    private int GetTestChunkSize()
+    {
+        var selected = (TestChunkSizeCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "10개";
+        if (selected == "분할안함") return 0;
+        return int.TryParse(selected.Replace("개", ""), out var n) ? n : 10;
+    }
+
+    private void TestSkipOcrCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        var isChecked = TestSkipOcrCheck.IsChecked == true;
+        TestSkipOcrFolderPanel.Visibility = isChecked ? Visibility.Visible : Visibility.Collapsed;
+        TestRunOcrOnlyButton.Content = isChecked ? "청크 재생성 (OCR 제외)" : "1차 가공 실행";
+        TestRunOcrOnlyButton.Background = isChecked
+            ? new System.Windows.Media.SolidColorBrush(
+                (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#e67e22"))
+            : new System.Windows.Media.SolidColorBrush(
+                (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#6c5ce7"));
+    }
+
+    private void TestSkipOcrSelectFolder_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Filter = "업로드용 엑셀|업로드용_*.xlsx|모든 파일|*.*",
+            Title = "기존 업로드용 엑셀 선택 (OCR결과 포함된 파일)",
+            InitialDirectory = @"C:\code\exports",
+        };
+
+        if (dlg.ShowDialog() == true)
+        {
+            _testSkipOcrFolder = Path.GetDirectoryName(dlg.FileName)!;
+            TestSkipOcrFolderText.Text = _testSkipOcrFolder;
+            Log($"OCR 재사용 폴더: {_testSkipOcrFolder}");
+            Log($"업로드용 엑셀: {Path.GetFileName(dlg.FileName)}");
+        }
+    }
+
+    private async void TestRunOcrOnly_Click(object sender, RoutedEventArgs e)
+    {
+        // OCR 제외 모드
+        if (TestSkipOcrCheck.IsChecked == true)
+        {
+            await TestRunSkipOcr_Execute();
+            return;
+        }
+
+        if (!ValidateSource()) return;
+        if (_products.Count > 0 && !_products.Any(p => p.IsSelected))
+        {
+            MessageBox.Show("처리할 상품을 선택하세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        SetRunning(true);
+        _cts = new CancellationTokenSource();
+        var chunkSize = GetTestChunkSize();
+
+        try
+        {
+            var inputFile = CreateFilteredFile();
+            if (inputFile == null) { SetRunning(false); return; }
+
+            var settings = BuildListingSettings();
+            var bridge = new PythonPipelineBridgeService(_v3Root, _legacyRoot);
+            var progress = new Progress<string>(msg => Log(msg));
+            var selectedModel = (ModelCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
+
+            Log($"테스트실행: 1차 가공 시작 (OCR + 이미지, LLM 스킵, 분할: {(chunkSize > 0 ? $"{chunkSize}개씩" : "안함")})...");
+            StatusText.Text = "1차 가공 중 (LLM 스킵)...";
+            ProgressBar.IsIndeterminate = true;
+
+            if (settings.MakeListing)
+            {
+                // Phase 1: 이미지 처리
+                Log("Phase 1: 이미지 다운로드 + 가공...");
+                var phase1 = await bridge.RunPipelineAsync(
+                    inputFile, settings, progress, _cts.Token, phase: "images", model: selectedModel);
+
+                _testOutputRoot = phase1.OutputRoot;
+                Log($"Phase 1 완료 — 이미지 폴더: {phase1.OutputRoot}");
+
+                // 이미지 선택 탭으로 전환
+                LoadListingImagesFromRoot(phase1.OutputRoot);
+
+                // Phase 2: OCR only (LLM 스킵)
+                Log("Phase 2: OCR only 실행 (키워드 생성 스킵)...");
+                StatusText.Text = "OCR 처리 중 (LLM 스킵)...";
+                var phase2Progress = new Progress<string>(msg => Log($"[OCR] {msg}"));
+                var phase2Result = await bridge.RunPipelineAsync(
+                    inputFile, settings, phase2Progress, _cts.Token,
+                    phase: "ocr_only", exportRoot: phase1.OutputRoot, model: selectedModel,
+                    chunkSize: chunkSize);
+
+                OnTestOcrComplete(phase2Result);
+            }
+            else
+            {
+                var result = await bridge.RunPipelineAsync(
+                    inputFile, settings, progress, _cts.Token, phase: "ocr_only", model: selectedModel,
+                    chunkSize: chunkSize);
+                OnTestOcrComplete(result);
+            }
+        }
+        catch (OperationCanceledException) { Log("작업 취소됨"); StatusText.Text = "취소됨"; }
+        catch (Exception ex) { HandlePipelineError(ex); }
+        finally { SetRunning(false); ProgressBar.IsIndeterminate = false; }
+    }
+
+    private async Task TestRunSkipOcr_Execute()
+    {
+        if (string.IsNullOrEmpty(_testSkipOcrFolder) || !Directory.Exists(_testSkipOcrFolder))
+        {
+            MessageBox.Show("기존 폴더를 먼저 선택하세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // 업로드용 엑셀 찾기
+        var uploadFiles = Directory.GetFiles(_testSkipOcrFolder, "업로드용_*.xlsx");
+        if (uploadFiles.Length == 0)
+        {
+            MessageBox.Show("선택한 폴더에 업로드용 엑셀이 없습니다.", "알림", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        Array.Sort(uploadFiles);
+        var uploadPath = uploadFiles[^1]; // 최신 파일
+        var chunkSize = GetTestChunkSize();
+
+        SetRunning(true);
+        ProgressBar.IsIndeterminate = true;
+        StatusText.Text = "청크 재생성 중 (OCR 제외)...";
+        Log($"OCR 제외 모드: 기존 업로드용 엑셀로 skill.md + 청크만 재생성");
+        Log($"엑셀: {Path.GetFileName(uploadPath)}");
+
+        try
+        {
+            var exportRoot = _testSkipOcrFolder;
+
+            // 기존 llm_chunks 폴더 정리
+            var chunksDir = Path.Combine(exportRoot, "llm_chunks");
+            if (Directory.Exists(chunksDir))
+                Directory.Delete(chunksDir, true);
+
+            // Python bridge로 phase=ocr_only 실행 (이미 OCR 결과가 엑셀에 포함되어 있으므로 OCR은 스킵되고 skill.md + 청크만 생성됨)
+            var bridgeService = new PythonPipelineBridgeService(_v3Root, _legacyRoot);
+            var progress = new Progress<string>(msg => Log(msg));
+            var selectedModel = (ModelCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
+
+            var result = await bridgeService.RunPipelineAsync(
+                uploadPath, BuildListingSettings(), progress, CancellationToken.None,
+                phase: "ocr_only", exportRoot: exportRoot, model: selectedModel,
+                chunkSize: chunkSize);
+
+            _testOutputRoot = exportRoot;
+            OnTestOcrComplete(result);
+        }
+        catch (Exception ex)
+        {
+            Log($"청크 재생성 오류: {ex.Message}");
+            MessageBox.Show(ex.Message, "오류", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            SetRunning(false);
+            ProgressBar.IsIndeterminate = false;
+        }
+    }
+
+    private List<string> _codexCommands = new();
+
+    private void OnTestOcrComplete(PythonPipelineBridgeResult result)
+    {
+        _testOutputRoot = result.OutputRoot;
+        TestOutputPathText.Text = $"결과 폴더: {result.OutputRoot}";
+        TestOpenOutputButton.IsEnabled = true;
+
+        var skillMd = Path.Combine(result.OutputRoot, "keyword_skill.md");
+        if (File.Exists(skillMd))
+            TestSkillMdPathText.Text = $"keyword_skill.md 생성됨";
+
+        var llmDir = Path.Combine(result.OutputRoot, "llm_result");
+        Directory.CreateDirectory(llmDir);
+
+        // Codex 병렬 실행 명령어 생성
+        _codexCommands.Clear();
+        var chunksDir = Path.Combine(result.OutputRoot, "llm_chunks");
+        if (Directory.Exists(chunksDir))
+        {
+            var chunkFiles = Directory.GetFiles(chunksDir, "chunk_*.xlsx");
+            if (chunkFiles.Length > 0)
+            {
+                Array.Sort(chunkFiles);
+                TestCodexCmdTitle.Text = $"Codex 병렬 실행 ({chunkFiles.Length}개 세션)";
+                foreach (var cf in chunkFiles)
+                {
+                    var fileName = Path.GetFileName(cf);
+                    var cmd = $"cd \"{chunksDir}\"; codex --full-auto \"keyword_skill.md 지시서에 따라 {fileName} 파일의 키워드를 채워서 llm_result/{fileName.Replace(".xlsx", "_llm.xlsx")} 로 저장해\"";
+                    _codexCommands.Add(cmd);
+                }
+                Log($"분할 엑셀 {chunkFiles.Length}개 → 각각 별도 PowerShell 창에서 실행");
+            }
+        }
+
+        if (_codexCommands.Count == 0)
+        {
+            // 분할 없이 단일 파일
+            var cmd = $"cd \"{result.OutputRoot}\"; codex --full-auto \"keyword_skill.md 지시서대로 실행해\"";
+            _codexCommands.Add(cmd);
+            TestCodexCmdTitle.Text = "Codex 실행 (단일 세션)";
+            Log($"keyword_skill.md + 업로드용 엑셀 → Codex에서 실행");
+        }
+
+        // UI에 명령어 카드 생성
+        BuildCodexCommandCards();
+        TestCodexCmdPanel.Visibility = Visibility.Visible;
+
+        Log($"1차 가공 완료!");
+        Log($"LLM 결과를 {llmDir} 에 저장하세요");
+        StatusText.Text = "1차 가공 완료 — LLM 키워드 처리 대기";
+
+        Activate();
+        System.Media.SystemSounds.Asterisk.Play();
+
+        if (!string.IsNullOrEmpty(result.OutputRoot) && Directory.Exists(result.OutputRoot))
+            Process.Start(new ProcessStartInfo("explorer.exe", result.OutputRoot));
+    }
+
+    private void BuildCodexCommandCards()
+    {
+        TestCodexCmdList.Items.Clear();
+        for (int i = 0; i < _codexCommands.Count; i++)
+        {
+            var idx = i;
+            var cmd = _codexCommands[i];
+
+            var border = new Border
+            {
+                Background = new System.Windows.Media.SolidColorBrush(
+                    (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#2d2d44")),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(8, 6, 8, 6),
+                Margin = new Thickness(0, 0, 0, 6)
+            };
+
+            var stack = new StackPanel();
+
+            var header = new TextBlock
+            {
+                Text = _codexCommands.Count > 1 ? $"세션 {i + 1}" : "실행 명령어",
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = new System.Windows.Media.SolidColorBrush(
+                    (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#a29bfe")),
+                Margin = new Thickness(0, 0, 0, 4)
+            };
+
+            var cmdText = new TextBox
+            {
+                Text = cmd,
+                FontSize = 10,
+                FontFamily = new System.Windows.Media.FontFamily("Consolas"),
+                Background = new System.Windows.Media.SolidColorBrush(
+                    (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#1e1e2e")),
+                Foreground = new System.Windows.Media.SolidColorBrush(
+                    (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#f8f8f2")),
+                BorderThickness = new Thickness(0),
+                IsReadOnly = true,
+                TextWrapping = TextWrapping.Wrap,
+                Padding = new Thickness(6, 4, 6, 4)
+            };
+
+            var copyBtn = new Button
+            {
+                Content = "복사",
+                Height = 24,
+                FontSize = 10,
+                Padding = new Thickness(12, 0, 12, 0),
+                Margin = new Thickness(0, 4, 0, 0),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Background = new System.Windows.Media.SolidColorBrush(
+                    (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#6c5ce7")),
+                Foreground = System.Windows.Media.Brushes.White
+            };
+            copyBtn.Click += (s, e) =>
+            {
+                Clipboard.SetText(cmd);
+                Log($"세션 {idx + 1} 명령어 복사됨");
+                StatusText.Text = $"세션 {idx + 1} 명령어 복사 완료";
+            };
+
+            stack.Children.Add(header);
+            stack.Children.Add(cmdText);
+            stack.Children.Add(copyBtn);
+            border.Child = stack;
+            TestCodexCmdList.Items.Add(border);
+        }
+    }
+
+    private void TestOpenOutput_Click(object sender, RoutedEventArgs e)
+    {
+        if (!string.IsNullOrEmpty(_testOutputRoot) && Directory.Exists(_testOutputRoot))
+            Process.Start(new ProcessStartInfo("explorer.exe", _testOutputRoot));
+    }
+
+    private void TestOpenChunksFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(_testOutputRoot)) return;
+        var chunksDir = Path.Combine(_testOutputRoot, "llm_chunks");
+        if (Directory.Exists(chunksDir))
+            Process.Start(new ProcessStartInfo("explorer.exe", chunksDir));
+    }
+
+    private void TestCopyAllCodexCmd_Click(object sender, RoutedEventArgs e)
+    {
+        if (_codexCommands.Count > 0)
+        {
+            var allCmds = string.Join("\n\n", _codexCommands.Select((c, i) => $"# 세션 {i + 1}\n{c}"));
+            Clipboard.SetText(allCmds);
+            Log($"전체 Codex 명령어 {_codexCommands.Count}개 복사됨");
+            StatusText.Text = $"전체 {_codexCommands.Count}개 명령어 복사 완료";
+        }
+    }
+
+    private void TestLoadLlmResult_Click(object sender, RoutedEventArgs e)
+    {
+        // llm_chunks/llm_result 또는 export_root/llm_result 우선 탐색
+        var startDir = "";
+        if (_testOutputRoot != null)
+        {
+            var chunksLlm = Path.Combine(_testOutputRoot, "llm_chunks", "llm_result");
+            var rootLlm = Path.Combine(_testOutputRoot, "llm_result");
+            if (Directory.Exists(chunksLlm)) startDir = chunksLlm;
+            else if (Directory.Exists(rootLlm)) startDir = rootLlm;
+        }
+
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Filter = "Excel|*.xlsx|모든 파일|*.*",
+            Title = "LLM 결과 엑셀 선택 (여러 파일 선택 가능)",
+            InitialDirectory = Directory.Exists(startDir) ? startDir : "",
+            Multiselect = true,
+        };
+
+        if (dlg.ShowDialog() == true && dlg.FileNames.Length > 0)
+        {
+            _testLlmResultFiles = dlg.FileNames.OrderBy(f => f).ToList();
+            _testLlmResultFile = _testLlmResultFiles[0]; // 호환용
+
+            if (_testLlmResultFiles.Count == 1)
+                TestLlmResultFileText.Text = $"LLM 결과: {Path.GetFileName(_testLlmResultFiles[0])}";
+            else
+                TestLlmResultFileText.Text = $"LLM 결과: {_testLlmResultFiles.Count}개 파일 선택됨";
+
+            TestCafe24UploadButton.IsEnabled = true;
+            TestCafe24CreateButton.IsEnabled = true;
+
+            foreach (var f in _testLlmResultFiles)
+                Log($"LLM 결과 파일: {Path.GetFileName(f)}");
+        }
+    }
+
+    private async void TestCafe24Create_Click(object sender, RoutedEventArgs e)
+    {
+        var files = _testLlmResultFiles.Where(File.Exists).ToList();
+        if (files.Count == 0)
+        {
+            MessageBox.Show("LLM 결과 파일을 먼저 선택하세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var exportRoot = _testOutputRoot ?? Path.GetDirectoryName(files[0])!;
+        var fileListText = files.Count <= 3
+            ? string.Join("\n", files.Select(f => Path.GetFileName(f)))
+            : $"{Path.GetFileName(files[0])} 외 {files.Count - 1}개";
+
+        var confirm = MessageBox.Show(
+            $"Cafe24에 신규상품을 등록합니다.\n\n" +
+            $"LLM 결과 파일: {files.Count}개\n{fileListText}\n" +
+            $"결과 폴더: {exportRoot}\n\n" +
+            $"파일을 순차적으로 처리합니다. 계속하시겠습니까?",
+            "Cafe24 신규등록 확인", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        TestCafe24CreateButton.IsEnabled = false;
+        _cts = new CancellationTokenSource();
+
+        int totalCreated = 0, totalError = 0, totalSkipped = 0;
+
+        try
+        {
+            ProgressBar.IsIndeterminate = true;
+            var createService = new Cafe24CreateProductService(_v3Root, _legacyRoot);
+            var progress = new Progress<string>(msg => Log(msg));
+
+            for (int i = 0; i < files.Count; i++)
+            {
+                var file = files[i];
+                StatusText.Text = $"Cafe24 신규등록 중... ({i + 1}/{files.Count}) {Path.GetFileName(file)}";
+                Log($"── 파일 {i + 1}/{files.Count}: {Path.GetFileName(file)} 처리 시작 ──");
+
+                var result = await createService.CreateAsync(
+                    file, exportRoot, progress, _cts.Token);
+
+                totalCreated += result.CreatedCount;
+                totalError += result.ErrorCount;
+                totalSkipped += result.SkippedCount;
+
+                Log($"── 파일 {i + 1} 완료: 등록 {result.CreatedCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount} ──");
+            }
+
+            Log($"전체 신규등록 완료: 등록 {totalCreated} / 오류 {totalError} / 스킵 {totalSkipped} (파일 {files.Count}개)");
+            StatusText.Text = $"신규등록 완료 (등록: {totalCreated}, 파일: {files.Count}개)";
+        }
+        catch (OperationCanceledException) { Log("신규등록 취소됨"); StatusText.Text = "취소됨"; }
+        catch (Exception ex)
+        {
+            Log($"신규등록 오류: {ex.Message}");
+            MessageBox.Show(ex.Message, "Cafe24 신규등록 오류", MessageBoxButton.OK, MessageBoxImage.Error);
+            StatusText.Text = "신규등록 오류";
+        }
+        finally
+        {
+            TestCafe24CreateButton.IsEnabled = true;
+            ProgressBar.IsIndeterminate = false;
+        }
+    }
+
+    private void TestCafe24Upload_Click(object sender, RoutedEventArgs e)
+    {
+        var files = _testLlmResultFiles.Where(File.Exists).ToList();
+        if (files.Count == 0)
+        {
+            MessageBox.Show("LLM 결과 파일을 먼저 선택하세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // 첫 번째 파일로 기존 업로드 로직 호출 (단일 파일용 호환)
+        _lastOutputRoot = _testOutputRoot ?? Path.GetDirectoryName(files[0])!;
+        _lastOutputFile = files[0];
+
+        // 기존 Cafe24 업로드 로직 재사용
+        Cafe24Upload_Click(sender, e);
+    }
+
+    #endregion
+
     #region ═══ STEP 2: Cafe24 업로드 ═══
 
     private Cafe24UploadOptions BuildUploadOptions()
@@ -719,7 +1179,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        var uploadFile = FindLatestFile(_lastOutputRoot, "업로드용_*.xlsx");
+        // LLM 결과 파일이 지정되어 있으면 그걸 사용, 아니면 최신 업로드용 파일 탐색
+        var uploadFile = !string.IsNullOrEmpty(_lastOutputFile) && File.Exists(_lastOutputFile)
+            ? _lastOutputFile
+            : FindLatestFile(_lastOutputRoot, "업로드용_*.xlsx");
         if (uploadFile == null)
         {
             MessageBox.Show("업로드용 엑셀 파일을 찾을 수 없습니다.", "알림", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -1709,6 +2172,7 @@ public partial class MainWindow : Window
         RunPipelineButton.IsEnabled = enabled;
         RunKeywordOnlyButton.IsEnabled = enabled;
         RunListingOnlyButton.IsEnabled = enabled;
+        TestRunOcrOnlyButton.IsEnabled = enabled;
     }
 
     private void SetRunning(bool running)
@@ -1834,12 +2298,24 @@ public partial class MainWindow : Window
         if (sender is not FrameworkElement fe || fe.DataContext is not ImageThumbnailItem clicked) return;
         if (ImageGsListBox.SelectedItem is not string gs) return;
 
+        // 대표이미지 선택
         foreach (var item in _imageThumbnails)
             item.IsMain = false;
-
         clicked.IsMain = true;
         clicked.IsAdditional = false;
         UpdateSelectionForGs(gs);
+
+        // 더블클릭이면 다음 GS코드로 이동
+        if (e.ClickCount >= 2)
+        {
+            var currentIndex = ImageGsListBox.SelectedIndex;
+            if (currentIndex < ImageGsListBox.Items.Count - 1)
+            {
+                ImageGsListBox.SelectedIndex = currentIndex + 1;
+                ImageGsListBox.ScrollIntoView(ImageGsListBox.SelectedItem);
+            }
+            e.Handled = true;
+        }
     }
 
     private void Thumbnail_RightClick(object sender, MouseButtonEventArgs e)

@@ -28,7 +28,8 @@ public sealed class PythonPipelineBridgeService
         CancellationToken cancellationToken = default,
         string phase = "full",
         string exportRoot = "",
-        string model = "")
+        string model = "",
+        int chunkSize = 10)
     {
         var scriptPath = ResolveScriptPath();
 
@@ -73,6 +74,7 @@ public sealed class PythonPipelineBridgeService
             AddArg(psi, "--export-root", exportRoot);
         if (!string.IsNullOrEmpty(model))
             AddArg(psi, "--model", model);
+        AddArg(psi, "--chunk-size", chunkSize.ToString());
         psi.Environment["PYTHONIOENCODING"] = "utf-8";
         psi.Environment["PYTHONUTF8"] = "1";
 

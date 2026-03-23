@@ -122,7 +122,9 @@ class _Completions:
         }
 
         if system_parts:
-            api_kwargs["system"] = "\n\n".join(system_parts)
+            system_text = "\n\n".join(system_parts)
+        else:
+            system_text = ""
 
         # Claude API는 temperature와 top_p를 동시에 지정할 수 없음
         # temperature가 있으면 temperature만 사용, 없으면 top_p 사용
@@ -135,10 +137,17 @@ class _Completions:
         resp_fmt = kwargs.get("response_format")
         if resp_fmt and resp_fmt.get("type") == "json_object":
             json_hint = "\n\n반드시 유효한 JSON만 출력하세요. 다른 텍스트는 포함하지 마세요."
-            if "system" in api_kwargs:
-                api_kwargs["system"] += json_hint
-            else:
-                api_kwargs["system"] = json_hint.strip()
+            system_text = (system_text + json_hint) if system_text else json_hint.strip()
+
+        # Prompt Caching: system 프롬프트를 블록 형태로 변환하여 캐싱
+        if system_text:
+            api_kwargs["system"] = [
+                {
+                    "type": "text",
+                    "text": system_text,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
 
         resp = self._client.messages.create(**api_kwargs)
 

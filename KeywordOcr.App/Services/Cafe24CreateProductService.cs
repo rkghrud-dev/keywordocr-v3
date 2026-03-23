@@ -33,7 +33,11 @@ public sealed class Cafe24CreateProductService
 
         var options = _configStore.LoadUploadOptions(exportRoot);
         var workingDirectory = Cafe24UploadSupport.ResolveWorkingDirectory(sourcePath, exportRoot, options);
-        var uploadWorkbookPath = Cafe24UploadSupport.FindLatestFileInDirectory(workingDirectory, "업로드용_*.xlsx");
+
+        // sourcePath가 직접 xlsx 파일이면 그걸 우선 사용 (LLM 결과 파일)
+        var uploadWorkbookPath = File.Exists(sourcePath) && sourcePath.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)
+            ? sourcePath
+            : Cafe24UploadSupport.FindLatestFileInDirectory(workingDirectory, "업로드용_*.xlsx");
         if (uploadWorkbookPath is null)
         {
             throw new FileNotFoundException("업로드용 엑셀을 찾지 못했습니다. 먼저 업로드용 엑셀을 생성해 주세요.", workingDirectory);

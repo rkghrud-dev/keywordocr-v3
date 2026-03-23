@@ -10,6 +10,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import base64
 
+import io
+
 import json
 
 import os
@@ -174,6 +176,7 @@ class PipelineConfig:
 
     phase: str = "full"          # "full" | "images" | "analysis"
     export_root_override: str = ""  # phase=analysis 시 Phase1의 export_root 재사용
+    chunk_size: int = 10             # ocr_only 모드에서 분할 엑셀 개수 (0이면 미분할)
 
 
 
@@ -228,6 +231,240 @@ def _format_naver_keyword_table(items: list, limit: int = 15) -> str:
         lines.append(f"{kw}|{pc}|{mo}|{total}")
 
     return "\n".join(lines)
+
+def _split_upload_excel(upload_path: str, export_root: str, chunk_size: int, date_tag: str, status_cb=None):
+    """업로드용 엑셀을 chunk_size 상품씩 분할하여 llm_chunks/ 폴더에 저장."""
+    import openpyxl
+
+    llm_chunks_dir = os.path.join(export_root, "llm_chunks")
+    os.makedirs(llm_chunks_dir, exist_ok=True)
+
+    wb = openpyxl.load_workbook(upload_path)
+    main_ws = wb["분리추출후"]
+    ocr_ws = wb["OCR결과"] if "OCR결과" in wb.sheetnames else None
+
+    # 헤더 행
+    main_headers = [cell.value for cell in main_ws[1]]
+    ocr_headers = [cell.value for cell in ocr_ws[1]] if ocr_ws else []
+
+    # 데이터 행
+    main_rows = list(main_ws.iter_rows(min_row=2, values_only=True))
+    ocr_rows = list(ocr_ws.iter_rows(min_row=2, values_only=True)) if ocr_ws else []
+
+    # GS코드로 OCR 매핑
+    ocr_map = {}
+    if ocr_rows and ocr_headers:
+        gs_col = 0
+        for i, h in enumerate(ocr_headers):
+            if str(h or '').strip() == 'GS코드':
+                gs_col = i
+                break
+        for row in ocr_rows:
+            gs = str(row[gs_col] or '').strip()
+            if gs:
+                ocr_map[gs] = row
+
+    # 상품명에서 GS코드 추출
+    name_col = 0
+    for i, h in enumerate(main_headers):
+        if str(h or '').strip() == '상품명':
+            name_col = i
+            break
+
+    chunk_files = []
+    total_chunks = (len(main_rows) + chunk_size - 1) // chunk_size
+
+    for ci in range(total_chunks):
+        start = ci * chunk_size
+        end = min(start + chunk_size, len(main_rows))
+        chunk_rows = main_rows[start:end]
+
+        chunk_wb = openpyxl.Workbook()
+        # 분리추출후 시트
+        ws1 = chunk_wb.active
+        ws1.title = "분리추출후"
+        ws1.append(main_headers)
+        for row in chunk_rows:
+            ws1.append(list(row))
+
+        # OCR결과 시트 (해당 상품만)
+        if ocr_headers:
+            ws2 = chunk_wb.create_sheet("OCR결과")
+            ws2.append(ocr_headers)
+            for row in chunk_rows:
+                name_val = str(row[name_col] or '')
+                import re as _re
+                gs_match = _re.search(r'GS\d{7,9}', name_val)
+                gs_key = gs_match.group()[:9] if gs_match else ''
+                if gs_key and gs_key in ocr_map:
+                    ws2.append(list(ocr_map[gs_key]))
+
+        chunk_name = f"chunk_{ci+1:02d}_{date_tag}.xlsx"
+        chunk_path = os.path.join(llm_chunks_dir, chunk_name)
+        chunk_wb.save(chunk_path)
+        chunk_files.append(chunk_path)
+
+    _status(status_cb, f"엑셀 분할 완료: {total_chunks}개 파일 (각 {chunk_size}개 상품) → {llm_chunks_dir}")
+    return chunk_files
+
+
+def _generate_keyword_skill_md(export_root: str, upload_path: str, date_tag: str, chunk_size: int = 0, status_cb=None):
+    """ocr_only 모드에서 LLM 키워드 생성용 지시서(keyword_skill.md)를 생성."""
+    md_path = os.path.join(export_root, "keyword_skill.md")
+    llm_result_dir = os.path.join(export_root, "llm_result")
+    os.makedirs(llm_result_dir, exist_ok=True)
+
+    upload_basename = os.path.basename(upload_path)
+    result_filename = f"업로드용_{date_tag}_llm.xlsx"
+
+    # 상대 경로 계산
+    llm_result_rel = "llm_result"
+    result_rel_path = f"{llm_result_rel}/{result_filename}"
+
+    content = f"""# 키워드 생성 지시서
+
+## 실행 모드 (필수)
+- **확인 질문 없이 끝까지 자동 실행하세요.** 절대 중간에 멈추지 마세요.
+- "진행할까요?", "맞나요?", "이렇게 할까요?" 등의 질문을 하지 마세요.
+- 엑셀 읽기 → 모든 행 키워드 채우기 → 결과 파일 저장까지 한 번에 완료하세요.
+- 완료 후 처리 건수와 결과 파일 경로만 출력하세요.
+- **모든 파일 경로는 이 지시서가 있는 폴더 기준 상대 경로입니다.** 절대 경로를 사용하지 마세요.
+
+## 작업 요약
+같은 폴더에 있는 엑셀 파일(`{upload_basename}`)을 읽고, 각 상품의 **상품명** 과 **검색어설정** 컬럼을 채워서 새 엑셀로 저장하세요.
+
+## ⚠️ 가장 중요: 상품명 = 핵심상품명이 맨 앞
+상품명 컬럼이 최종 쇼핑몰에 노출되는 핵심 필드입니다.
+반드시 **원본 상품명에서 추출한 핵심 상품명을 맨 앞에** 배치하고, 나머지 키워드를 뒤에 붙이세요.
+
+## 입력 파일 구조
+### 시트1: `분리추출후` (상품 데이터)
+- **상품명**: 원본 상품명 (GS코드9자리 포함) — 이걸 키워드가 포함된 상품명으로 **교체**
+  - 원본 예시: `GS0700704 끝검 스테인리스 호스 컷팅밴드 2M`
+  - ✅ 변경 예시: `스테인리스 호스 컷팅밴드 2M 파이프 배관 고정 연결 롤형 자유절단 호스밴드`
+  - ❌ 잘못된 예: `호스 파이프 배관 자동차 오토바이 스테인리스 호스클램프 컷팅밴드 생활철물 DIY수리 교체용 보수용` (핵심상품명이 묻히고 카테고리 나열)
+  - ❌ GS코드(GS0700704)는 상품명에서 **제거**
+- **검색어설정**: 빈 컬럼 — Cafe24 검색어용 (쉼표 구분)
+- **검색키워드**: 빈 컬럼 — 네이버 검색용 (공백 구분)
+
+### 시트2: `OCR결과` (OCR 텍스트 — 반드시 참조)
+- **GS코드**: 상품 매칭 키 (분리추출후 시트의 상품명에서 GS코드를 추출하여 매칭)
+- **OCR텍스트**: 상품 이미지에서 OCR로 추출한 원본 텍스트
+- **대표이미지수**: 이미지 수
+
+OCR결과 시트의 텍스트를 반드시 참고하여 상품의 실제 특성(재질, 규격, 용도 등)을 파악하세요.
+
+## 키워드 생성 규칙
+
+### 키워드 우선순위 (이 순서대로 채우세요)
+1. **핵심 키워드** (상품 유형의 표준명) — 검색창에 사용자가 실제로 입력하는 대표 표현
+2. **세부 속성** (규격/소재/용량/호환/기능) — 롱테일 검색 매칭의 핵심
+3. **용도/상황** (사무실용, 차량용, 캠핑, 욕실 등) — 구매 의도와 연결
+4. **형태/별칭** (스틱형, 롱타입, 미니 등) — 다른 표현으로 검색하는 사용자 커버
+
+### 1단계: 카테고리 확인 (필수)
+각 상품의 키워드를 작성하기 전에 반드시 **상품이 실제로 어떤 카테고리인지** 확인하세요.
+- OCR 텍스트와 원본 상품명을 기반으로 상품의 **정확한 용도/카테고리**를 판단
+- 예: "호스클램프"는 배관부품, "케틀벨"은 운동용품, "간병패드"는 의료/간병용품
+- ❌ 카테고리명 자체(생활철물, DIY수리, 운동용품 등)를 상품명에 넣지 마세요 — 카테고리는 별도 필드로 이미 검색에 반영됩니다
+- ✅ 대신 상품의 **구체적 속성/용도** 키워드를 사용하세요
+
+### 2단계: 상품명 작성
+- 공백으로 구분된 키워드 나열
+- **80~100자** 범위로 최대한 채우세요 (쿠팡·네이버 모두 100자 제한). 너무 짧으면 검색 노출이 줄어듭니다.
+- **구조: [핵심상품명(표준명)] + [대표옵션/규격] + [핵심속성] + [용도/사용처] + [별칭/동의어]**
+- **동의어 활용**: 같은 단어를 반복하지 말고, 두 번째 언급부터는 **동의어/별칭**을 사용하세요
+  - 예: `구리스 호스` → 이후에는 `그리스`로, `호스클램프` → 이후에는 `호스밴드`로
+  - 예: `걸레` → `청소포`, `전구` → `램프`, `수도꼭지` → `수전`
+- **사용처/용도를 충분히 넣으세요**: 이 상품을 어디서/어떻게 쓰는지 (차량, 자동차, 중장비, 산업현장, 가정, 사무실, 욕실 등)
+- 예시:
+  - 원본 `구리스 호스 30cm` → `구리스 호스 30cm 고압 스프링 연장 연결 그리스 건 커플러 호환 협소 공간 차량 중장비 산업용 정비 윤활 주입 노즐 교체 1P`
+  - 원본 `유리문 슬라이딩 레일롤러 호차` → `유리문 슬라이딩 레일 롤러 호차 장식장 진열장 도어 황동 5mm 4P 무타공 교체 설치 가구 수리 부속`
+  - 원본 `창문 잠금후크` → `창문 잠금 후크 방충망 미닫이 걸쇠 안전장치 PP 강철 창호부속 방범용 실내 베란다 시건 장치`
+  - 원본 `U형 PVC 클램프 14mm` → `U형 PVC 클램프 14mm 전선 배관 호스 고정 브라켓 나사 고정 배선 정리 벽면 천장 매립 전기 작업`
+
+### 띄어쓰기 규칙 (중요)
+- **자연스러운 띄어쓰기 1회만** 사용 — 의미 단위로 띄어쓰기
+- ❌ 붙여쓰기/띄어쓰기 둘 다 넣지 마세요 (`무선청소기, 무선 청소기` → `무선 청소기`만)
+- ❌ 띄어쓰기 과다/과소 모두 비권장
+- ✅ 수식어-상품명 띄어쓰기: `강력 흡입`, `대용량 배터리`
+- ✅ 브랜드-제품명 띄어쓰기: `노루 페인트`
+
+### 중복 제거 규칙 (필수)
+아래 4종 중복을 반드시 제거하세요. **슬롯 낭비이자 어뷰징 위험**입니다.
+1. **완전 중복**: 동일 단어 반복 (`기모, 기모` → `기모`)
+2. **공백 변형 중복**: 붙/띄만 다른 표현 (`무선청소기` vs `무선 청소기` → 띄어쓰기 형태 1개만)
+3. **재조합 중복**: 같은 단어 순서만 바꾼 것 (`가을 패딩` vs `패딩 가을` → 1개만)
+4. **동의어 중복**: 같은 의미 단어 나열 (`핸드폰/휴대폰/스마트폰` → 검색량 높은 1개만)
+
+### 형태 정규화
+- **형용사/동사 → 명사형**: `강력한` → `강력`, `사용하는` → `사용`, `튼튼한` → `내구성`
+- **연속 공백 제거**: 공백은 항상 1칸
+- **합성어 분리형 우선**: 필요시 합성어 1개만 허용 (`유리롤러 레일롤러` → `유리 레일 롤러`)
+
+### 핵심 원칙
+1. **핵심상품명 맨 앞**: 원본 상품명의 핵심 단어(GS코드 제외)를 상품명 맨 앞에 배치
+2. **동의어 활용**: 같은 단어를 2번 쓰지 말고, 두 번째부터는 동의어/별칭 사용 (구리스→그리스, 걸레→청소포)
+3. **색상 제외**: 색상은 옵션이므로 키워드에서 제외
+4. **카테고리명 금지**: `생활철물`, `운동용품`, `주방용품` 같은 카테고리명을 상품명에 넣지 마세요
+5. **속성/용도 중심**: 카테고리 대신 구체적 속성(소재, 규격, 기능)과 용도(차량용, 사무실, 캠핑)로 채우세요
+6. **80~100자 채우기**: 짧으면 검색 노출 손해. 용도/사용처를 더 넣어서 채우세요
+
+### ❌ 반드시 제외할 노이즈
+아래 항목은 OCR 텍스트에 포함되어 있더라도 **절대 키워드에 사용하지 마세요**:
+- 상세페이지 템플릿: Product Profile, SIZE, Advantage, Features, Description, Specification
+- 영어 마케팅 문구: Premium Quality, Best Seller, Hot Item, Free Shipping
+- 배송/정책: 배송, 반품, 교환, AS, 원산지, 연락처
+- 판매조건: 무료배송, 할인, 프로모션, 이벤트, 특가, 최저가
+- 검증 곤란 수식어(단독 사용 금지): 최고급, 프리미엄, 고품질, 인기상품, 베스트
+- 엑셀 컬럼명: 옵션입력, 판매가, 재고수, 이미지URL 등 데이터 필드명
+- **다른 상품의 키워드를 섞지 마세요** — 각 행은 독립된 상품입니다
+
+### 3단계: 검색어설정 (Cafe24 태그)
+- **띄어쓰기 없이 붙여쓰기**, 쉼표로 구분, **반드시 20개** 채우세요
+- 각 검색어는 2~4음절 단어 조합을 붙여쓰기 (예: `구리스호스`, `고압연장`, `그리스건`)
+- 상품명에서 다 넣지 못한 **용도/상황/별칭/동의어**를 여기에 배치
+- ❌ 띄어쓰기 금지 — `구리스 호스`가 아니라 `구리스호스`
+- ❌ 상품명과 완전히 동일한 조합을 반복하지 마세요
+- ✅ 다양한 조합으로 20개를 채우세요
+- 예시: `구리스호스,그리스호스,고압호스,스프링호스,구리스건,그리스건,윤활호스,커플러연결,호스연장,협소공간,차량정비,중장비윤활,오일주입,노즐교체,정비공구,산업용호스,연결호스,고압연장,그리스주입,윤활공구`
+
+### 4단계: 검색키워드
+- 네이버 쇼핑 검색용 상위 키워드
+- 공백 구분, 최대 18개
+- 상품명 + 검색어설정에서 핵심만 추려서 배치
+
+## 병렬 처리 안내
+이 파일이 여러 개로 분할되어 있을 수 있습니다 (chunk_01, chunk_02 등).
+각 파일은 독립적으로 처리 가능하며, **별도의 Codex/ChatGPT 세션에서 병렬 실행**하면 빠릅니다.
+
+## 출력
+- **원본 엑셀과 동일한 구조** 유지, 키워드 관련 컬럼만 채워서 저장
+- 저장 경로: `{llm_result_rel}/` (이 지시서와 같은 폴더 안의 하위 폴더)
+- **파일명 규칙**: 입력 파일명에서 `.xlsx`를 `_llm.xlsx`로 바꿔서 저장
+  - 예: `chunk_01_20260323.xlsx` → `{llm_result_rel}/chunk_01_20260323_llm.xlsx`
+  - 예: `chunk_05_20260323.xlsx` → `{llm_result_rel}/chunk_05_20260323_llm.xlsx`
+- ⚠️ 다른 청크 파일의 결과를 덮어쓰지 마세요. 반드시 입력 파일명 기준으로 저장하세요.
+"""
+
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    _status(status_cb, f"keyword_skill.md 생성: {md_path}")
+    _status(status_cb, f"LLM 결과 저장 폴더: {llm_result_dir}")
+
+    # 분할 엑셀 생성 + skill.md 복사
+    if chunk_size and chunk_size > 0:
+        _split_upload_excel(upload_path, export_root, chunk_size, date_tag, status_cb)
+        # llm_chunks 폴더에도 keyword_skill.md 복사 (Codex가 참조할 수 있도록)
+        import shutil
+        chunks_skill = os.path.join(export_root, "llm_chunks", "keyword_skill.md")
+        if os.path.isdir(os.path.join(export_root, "llm_chunks")):
+            shutil.copy2(md_path, chunks_skill)
+            # llm_result 폴더도 llm_chunks 안에 생성
+            os.makedirs(os.path.join(export_root, "llm_chunks", "llm_result"), exist_ok=True)
+            _status(status_cb, f"keyword_skill.md → llm_chunks/ 복사 완료")
+
 
 def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple[str, str]:
 
@@ -459,6 +696,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
         # 상품코드 열의 자동값 제거 (A2 Pxxxxxx 제거 포함)
 
+        df[df.columns[0]] = df[df.columns[0]].astype(object)
         df.iloc[:, 0] = ""
 
     if df.shape[1] >= 5:
@@ -569,6 +807,8 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
             continue
 
+        _letter_offset = 0  # 밴드 간 알파벳 오프셋 누적
+
         for _bi, _band in enumerate(_bands):
 
             _band_sells = [float(df.at[_idx, 판매가_col]) for _idx in _band]
@@ -581,7 +821,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
             for _ri, _idx in enumerate(_band):
 
-                _new_letter = chr(65 + _ri)
+                _new_letter = chr(65 + _letter_offset + _ri)
 
                 df.at[_idx, "_code9_from_name"] = f"{_gs9}-{_bi+1}"
 
@@ -602,6 +842,8 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                     _new_code = re.sub(r'(GS\d{7})[A-Z0-9]+', rf'\g<1>{_new_letter}', _old_code, count=1)
 
                     df.at[_idx, code_col] = _new_code
+
+            _letter_offset += len(_band)  # 다음 밴드는 이어서 알파벳 부여
 
         _price_split_log.append(f"{_gs9} → {len(_bands)}개 상품으로 분리")
 
@@ -685,7 +927,19 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
 
 
+    # 가격 분리된 밴드(GS...-1, GS...-2)에서 알파벳 오프셋 계산
+    _band_letter_offset: dict[str, int] = {}
     grouped = df.groupby("_code9_from_name", dropna=True)
+    for code in sorted(grouped.groups.keys(), key=lambda c: str(c)):
+        code_str = str(code)
+        # GS1234567-2 형태인 경우 같은 원본의 이전 밴드 옵션 수를 누적
+        if "-" in code_str:
+            base_gs = code_str.rsplit("-", 1)[0]
+            _band_letter_offset.setdefault(base_gs, 0)
+            _band_letter_offset[code_str] = _band_letter_offset[base_gs]
+            _band_letter_offset[base_gs] += len(grouped.get_group(code))
+        else:
+            _band_letter_offset[code_str] = 0
 
     for code, group in grouped:
 
@@ -695,9 +949,11 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
         opts = []
 
+        _opt_offset = _band_letter_offset.get(str(code), 0)
+
         for i, (idx, row) in enumerate(group.iterrows()):
 
-            option_code = chr(65 + i)
+            option_code = chr(65 + _opt_offset + i)
 
             option_val = str(row["_opt_from_name"]).strip()
 
@@ -743,13 +999,18 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
     code_s = df[code_col].astype(str) if (code_col and code_col in df.columns) else pd.Series("", index=df.index, dtype="string")
 
-    # 자체상품코드/상품명 모두 "GS + 7자리 + A로 끝나는 코드"만 허용
-
+    # 대표행 판별: GS코드A로 끝나거나, 가격 분리로 옵션입력이 설정된 행
     mask1 = code_s.str.contains(r"GS\d{7}A$", na=False, regex=True)
 
     mask2 = name_s.str.contains(r"GS\d{7}A\b", na=False, regex=True)
 
-    rep_mask = (mask1 | mask2)
+    # 가격 분리된 밴드의 대표행 (옵션입력이 설정된 행)
+    _opt_input_col = [c for c in df.columns if str(c).strip() == "옵션입력"]
+    mask3 = pd.Series(False, index=df.index)
+    if _opt_input_col:
+        mask3 = df[_opt_input_col[0]].astype(str).str.startswith("옵션{", na=False)
+
+    rep_mask = (mask1 | mask2 | mask3)
 
     df_after = df.loc[rep_mask].copy()
 
@@ -1027,19 +1288,31 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
 
 
+            def _resize_image_for_vision(img_path, max_side=768):
+                """Vision API 토큰 절약을 위해 이미지를 리사이즈하여 base64 반환."""
+                from PIL import Image
+                img = Image.open(img_path)
+                w, h = img.size
+                if max(w, h) > max_side:
+                    ratio = max_side / max(w, h)
+                    img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=75)
+                return base64.b64encode(buf.getvalue()).decode("utf-8"), "image/jpeg"
+
             def _build_image_contents(paths):
 
                 out = []
 
                 for img_path in paths:
 
-                    with open(img_path, "rb") as f:
-
-                        b64 = base64.b64encode(f.read()).decode("utf-8")
-
-                    ext = os.path.splitext(img_path)[1].lower()
-
-                    mime = "image/png" if ext == ".png" else "image/jpeg"
+                    try:
+                        b64, mime = _resize_image_for_vision(img_path)
+                    except Exception:
+                        with open(img_path, "rb") as f:
+                            b64 = base64.b64encode(f.read()).decode("utf-8")
+                        ext = os.path.splitext(img_path)[1].lower()
+                        mime = "image/png" if ext == ".png" else "image/jpeg"
 
                     out.append({
 
@@ -2128,11 +2401,14 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
             _vision_hint_parts = []
 
-            if gs_code9:
+            # OCR 텍스트가 충분하면(300자 이상) Vision 스킵 → 토큰 절약
+            _skip_vision = len(sum_text) >= 300 or cfg.phase == "ocr_only"
+
+            if gs_code9 and not _skip_vision:
 
                 _gs_low_v = gs_code9.lower()
 
-                _vision_imgs = [p for p in global_listing_sources if _gs_low_v in os.path.basename(p).lower() and os.path.isfile(p)][:5]
+                _vision_imgs = [p for p in global_listing_sources if _gs_low_v in os.path.basename(p).lower() and os.path.isfile(p)][:3]
 
                 if _vision_imgs:
 
@@ -2185,6 +2461,28 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
             kw_tokens = []
 
             gpt_err = ""
+
+            # ocr_only 모드: LLM 키워드 생성 전부 스킵
+            if cfg.phase == "ocr_only":
+                search_keywords = ""
+                _status(status_cb, f"[{row_i}/{total_rows}] {gs_code9} — OCR only 모드: 키워드 생성 스킵")
+                # 후처리까지 건너뛰기 위해 아래 블록 전체 스킵
+                kw_tokens = [t for t in re.split(r"\s+", prompt_product_name) if t][:5]
+                kw_line = " ".join(kw_tokens)
+
+                # 이 행의 나머지 키워드/검색어 처리는 불필요하므로 continue 전에 OCR요약만 저장
+                if "OCR요약" in df_after.columns:
+                    df_after.at[idx, "OCR요약"] = sum_text[:500] if sum_text else ""
+                df_after.at[idx, "검색키워드"] = ""
+                df_after.at[idx, "검색어설정"] = ""
+
+                debug_rows.append({
+                    "GS코드": gs_code9 or "",
+                    "상품명": base_name,
+                    "OCR길이": len(sum_text),
+                    "모드": "ocr_only",
+                })
+                continue
 
             # GPT 프롬프트(최적화됨)를 우선 사용. Vision 데이터는 context로 전달.
             kw_line, kw_tokens = core.generate_keyword_gpt(
@@ -3048,6 +3346,10 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
             df_upload_export.to_excel(writer, sheet_name="분리추출후", index=False)
 
+            # OCR 결과를 업로드용 엑셀에 함께 저장 (LLM 키워드 생성용)
+            if ocr_results_list:
+                pd.DataFrame(ocr_results_list).to_excel(writer, sheet_name="OCR결과", index=False)
+
     except PermissionError:
 
         # file might be opened by Excel; write a timestamped file instead
@@ -3057,6 +3359,9 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
         with pd.ExcelWriter(upload_path, engine="openpyxl") as writer:
 
             df_upload_export.to_excel(writer, sheet_name="분리추출후", index=False)
+
+            if ocr_results_list:
+                pd.DataFrame(ocr_results_list).to_excel(writer, sheet_name="OCR결과", index=False)
 
 
 
@@ -3097,6 +3402,10 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
             _status(status_cb, f"OCR 결과 저장 오류: {e}")
 
 
+
+    # ── ocr_only 모드: keyword_skill.md 생성 ──
+    if cfg.phase == "ocr_only":
+        _generate_keyword_skill_md(export_root, upload_path, date_tag, chunk_size=cfg.chunk_size, status_cb=status_cb)
 
     # ── 상세 없는 상품 별도 파일 저장 (원본 형식 유지) ──
 

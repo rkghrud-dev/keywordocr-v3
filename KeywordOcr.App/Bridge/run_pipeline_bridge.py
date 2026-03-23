@@ -66,9 +66,10 @@ def main() -> int:
     parser.add_argument('--jpeg-q-min', default='88')
     parser.add_argument('--jpeg-q-max', default='92')
     parser.add_argument('--flip-lr', default='true')
-    parser.add_argument('--phase', default='full', choices=['full', 'images', 'analysis'])
+    parser.add_argument('--phase', default='full', choices=['full', 'images', 'analysis', 'ocr_only'])
     parser.add_argument('--export-root', default='')
     parser.add_argument('--model', default='claude-sonnet-4-6')
+    parser.add_argument('--chunk-size', default='10')
     args = parser.parse_args()
 
     legacy_root = Path(args.legacy_root).resolve()
@@ -131,6 +132,7 @@ def main() -> int:
         do_flip_lr=_to_bool(args.flip_lr),
         phase=args.phase,
         export_root_override=str(args.export_root or '').strip(),
+        chunk_size=int(args.chunk_size),
     )
 
     _status('작업 시작')
