@@ -875,6 +875,7 @@ public partial class MainWindow : Window
     }
 
     private List<string> _codexCommands = new();
+    private List<string> _codexCommandsExt = new();
 
     private void OnTestOcrComplete(PythonPipelineBridgeResult result)
     {
@@ -883,14 +884,20 @@ public partial class MainWindow : Window
         TestOpenOutputButton.IsEnabled = true;
 
         var skillMd = Path.Combine(result.OutputRoot, "keyword_skill.md");
-        if (File.Exists(skillMd))
+        var skillMdExt = Path.Combine(result.OutputRoot, "keyword_skill_extended.md");
+        if (File.Exists(skillMd) && File.Exists(skillMdExt))
+            TestSkillMdPathText.Text = $"keyword_skill.md + extended 생성됨";
+        else if (File.Exists(skillMd))
             TestSkillMdPathText.Text = $"keyword_skill.md 생성됨";
 
         var llmDir = Path.Combine(result.OutputRoot, "llm_result");
+        var llmDirExt = Path.Combine(result.OutputRoot, "llm_result_ext");
         Directory.CreateDirectory(llmDir);
+        Directory.CreateDirectory(llmDirExt);
 
-        // Codex 병렬 실행 명령어 생성
+        // Codex 병렬 실행 명령어 생성 (기본 + 확장)
         _codexCommands.Clear();
+        _codexCommandsExt.Clear();
         var chunksDir = Path.Combine(result.OutputRoot, "llm_chunks");
         if (Directory.Exists(chunksDir))
         {
@@ -898,14 +905,16 @@ public partial class MainWindow : Window
             if (chunkFiles.Length > 0)
             {
                 Array.Sort(chunkFiles);
-                TestCodexCmdTitle.Text = $"Codex 병렬 실행 ({chunkFiles.Length}개 세션)";
+                TestCodexCmdTitle.Text = $"Codex 병렬 실행 ({chunkFiles.Length}개 세션 × 2세트)";
                 foreach (var cf in chunkFiles)
                 {
                     var fileName = Path.GetFileName(cf);
                     var cmd = $"cd \"{chunksDir}\"; codex --full-auto \"keyword_skill.md 지시서에 따라 {fileName} 파일의 키워드를 채워서 llm_result/{fileName.Replace(".xlsx", "_llm.xlsx")} 로 저장해\"";
                     _codexCommands.Add(cmd);
+                    var cmdExt = $"cd \"{chunksDir}\"; codex --full-auto \"keyword_skill_extended.md 지시서에 따라 {fileName} 파일의 키워드를 채워서 llm_result_ext/{fileName.Replace(".xlsx", "_llm.xlsx")} 로 저장해\"";
+                    _codexCommandsExt.Add(cmdExt);
                 }
-                Log($"분할 엑셀 {chunkFiles.Length}개 → 각각 별도 PowerShell 창에서 실행");
+                Log($"분할 엑셀 {chunkFiles.Length}개 → 기본/확장 2세트 명령어 생성");
             }
         }
 
@@ -914,17 +923,20 @@ public partial class MainWindow : Window
             // 분할 없이 단일 파일
             var cmd = $"cd \"{result.OutputRoot}\"; codex --full-auto \"keyword_skill.md 지시서대로 실행해\"";
             _codexCommands.Add(cmd);
-            TestCodexCmdTitle.Text = "Codex 실행 (단일 세션)";
-            Log($"keyword_skill.md + 업로드용 엑셀 → Codex에서 실행");
+            var cmdExt = $"cd \"{result.OutputRoot}\"; codex --full-auto \"keyword_skill_extended.md 지시서대로 실행해\"";
+            _codexCommandsExt.Add(cmdExt);
+            TestCodexCmdTitle.Text = "Codex 실행 (기본 + 확장)";
+            Log($"keyword_skill.md + extended → Codex에서 실행");
         }
 
-        // UI에 명령어 카드 생성
+        // UI에 명령어 카드 생성 (2세트)
         BuildCodexCommandCards();
         TestCodexCmdPanel.Visibility = Visibility.Visible;
 
         Log($"1차 가공 완료!");
-        Log($"LLM 결과를 {llmDir} 에 저장하세요");
-        StatusText.Text = "1차 가공 완료 — LLM 키워드 처리 대기";
+        Log($"기본 결과 → {llmDir}");
+        Log($"확장 결과 → {llmDirExt}");
+        StatusText.Text = "1차 가공 완료 — LLM 키워드 처리 대기 (기본/확장 2세트)";
 
         Activate();
         System.Media.SystemSounds.Asterisk.Play();
@@ -936,15 +948,44 @@ public partial class MainWindow : Window
     private void BuildCodexCommandCards()
     {
         TestCodexCmdList.Items.Clear();
-        for (int i = 0; i < _codexCommands.Count; i++)
+
+        // ── 기본 키워드셋 섹션 ──
+        _AddSectionHeader("기본 키워드셋", "#a29bfe");
+        _AddCommandCards(_codexCommands, "기본", "#2d2d44", "#6c5ce7");
+
+        // ── 확장 키워드셋 섹션 (PDF 보고서 규칙) ──
+        if (_codexCommandsExt.Count > 0)
+        {
+            _AddSectionHeader("확장 키워드셋 (SEO 최적화)", "#00b894");
+            _AddCommandCards(_codexCommandsExt, "확장", "#2d3d44", "#00b894");
+        }
+    }
+
+    private void _AddSectionHeader(string title, string colorHex)
+    {
+        var header = new TextBlock
+        {
+            Text = $"▸ {title}",
+            FontSize = 12,
+            FontWeight = FontWeights.Bold,
+            Foreground = new System.Windows.Media.SolidColorBrush(
+                (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorHex)),
+            Margin = new Thickness(0, 8, 0, 4)
+        };
+        TestCodexCmdList.Items.Add(header);
+    }
+
+    private void _AddCommandCards(List<string> commands, string label, string bgHex, string accentHex)
+    {
+        for (int i = 0; i < commands.Count; i++)
         {
             var idx = i;
-            var cmd = _codexCommands[i];
+            var cmd = commands[i];
 
             var border = new Border
             {
                 Background = new System.Windows.Media.SolidColorBrush(
-                    (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#2d2d44")),
+                    (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(bgHex)),
                 CornerRadius = new CornerRadius(4),
                 Padding = new Thickness(8, 6, 8, 6),
                 Margin = new Thickness(0, 0, 0, 6)
@@ -954,11 +995,11 @@ public partial class MainWindow : Window
 
             var header = new TextBlock
             {
-                Text = _codexCommands.Count > 1 ? $"세션 {i + 1}" : "실행 명령어",
+                Text = commands.Count > 1 ? $"{label} 세션 {i + 1}" : $"{label} 실행 명령어",
                 FontSize = 10,
                 FontWeight = FontWeights.Bold,
                 Foreground = new System.Windows.Media.SolidColorBrush(
-                    (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#a29bfe")),
+                    (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(accentHex)),
                 Margin = new Thickness(0, 0, 0, 4)
             };
 
@@ -986,14 +1027,15 @@ public partial class MainWindow : Window
                 Margin = new Thickness(0, 4, 0, 0),
                 HorizontalAlignment = HorizontalAlignment.Left,
                 Background = new System.Windows.Media.SolidColorBrush(
-                    (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#6c5ce7")),
+                    (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(accentHex)),
                 Foreground = System.Windows.Media.Brushes.White
             };
+            var capturedLabel = label;
             copyBtn.Click += (s, e) =>
             {
                 Clipboard.SetText(cmd);
-                Log($"세션 {idx + 1} 명령어 복사됨");
-                StatusText.Text = $"세션 {idx + 1} 명령어 복사 완료";
+                Log($"{capturedLabel} 세션 {idx + 1} 명령어 복사됨");
+                StatusText.Text = $"{capturedLabel} 세션 {idx + 1} 명령어 복사 완료";
             };
 
             stack.Children.Add(header);
@@ -1020,12 +1062,23 @@ public partial class MainWindow : Window
 
     private void TestCopyAllCodexCmd_Click(object sender, RoutedEventArgs e)
     {
+        var sections = new List<string>();
         if (_codexCommands.Count > 0)
         {
-            var allCmds = string.Join("\n\n", _codexCommands.Select((c, i) => $"# 세션 {i + 1}\n{c}"));
-            Clipboard.SetText(allCmds);
-            Log($"전체 Codex 명령어 {_codexCommands.Count}개 복사됨");
-            StatusText.Text = $"전체 {_codexCommands.Count}개 명령어 복사 완료";
+            sections.Add("# ── 기본 키워드셋 ──");
+            sections.AddRange(_codexCommands.Select((c, i) => $"# 기본 세션 {i + 1}\n{c}"));
+        }
+        if (_codexCommandsExt.Count > 0)
+        {
+            sections.Add("\n# ── 확장 키워드셋 (SEO 최적화) ──");
+            sections.AddRange(_codexCommandsExt.Select((c, i) => $"# 확장 세션 {i + 1}\n{c}"));
+        }
+        if (sections.Count > 0)
+        {
+            Clipboard.SetText(string.Join("\n\n", sections));
+            var total = _codexCommands.Count + _codexCommandsExt.Count;
+            Log($"전체 Codex 명령어 {total}개 복사됨 (기본 {_codexCommands.Count} + 확장 {_codexCommandsExt.Count})");
+            StatusText.Text = $"전체 {total}개 명령어 복사 완료";
         }
     }
 
