@@ -3639,8 +3639,8 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
 
 
-    # phase=analysis 이면 리스팅 이미지 처리 건너뜀 (Phase1에서 이미 완료)
-    if cfg.phase == "analysis":
+    # phase=analysis/ocr_only 이면 리스팅 이미지 처리 건너뜀 (Phase1에서 이미 완료)
+    if cfg.phase in ("analysis", "ocr_only"):
         _status(status_cb, "리스팅 이미지 처리 건너뜀 (Phase1에서 완료)")
 
     elif cfg.make_listing and len(global_listing_sources) > 0:

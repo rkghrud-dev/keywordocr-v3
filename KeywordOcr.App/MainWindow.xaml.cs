@@ -25,6 +25,7 @@ namespace KeywordOcr.App;
 public partial class MainWindow : Window
 {
     private readonly string _legacyRoot;
+    private readonly string _pythonRoot;   // v3/backend — Python import 경로
     private readonly string _v3Root;
     private string? _sourcePath;
     private string? _lastOutputRoot;
@@ -46,10 +47,12 @@ public partial class MainWindow : Window
         InitializeComponent();
 
         _v3Root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
-        _legacyRoot = Path.GetFullPath(Path.Combine(_v3Root, ".."));
 
-        if (!Directory.Exists(Path.Combine(_legacyRoot, "app")))
-            _legacyRoot = @"C:\Users\rkghr\Desktop\프로젝트\keywordocr";
+        // v3 단독 구조: 설정 파일은 v3Root에, Python은 v3Root/backend/에
+        _pythonRoot = Path.Combine(_v3Root, "backend");
+        _legacyRoot = Directory.Exists(Path.Combine(_v3Root, "app_settings.json"))
+            ? _v3Root
+            : Path.GetFullPath(Path.Combine(_v3Root, ".."));  // fallback: 구 중첩 구조
 
         _settingsPath = Path.Combine(_legacyRoot, "app_settings.json");
 
@@ -69,7 +72,7 @@ public partial class MainWindow : Window
         RefreshHistoryGrid();
 
         Log("KeywordOCR v3 시작");
-        Log($"Python 루트: {_legacyRoot}");
+        Log($"Python 루트: {_pythonRoot}");
     }
 
     #region ═══ 드래그 앤 드롭 ═══
@@ -535,7 +538,7 @@ public partial class MainWindow : Window
             if (inputFile == null) { SetRunning(false); return; }
 
             var settings = BuildListingSettings();
-            var bridge = new PythonPipelineBridgeService(_v3Root, _legacyRoot);
+            var bridge = new PythonPipelineBridgeService(_v3Root, _pythonRoot);
             var progress = new Progress<string>(msg => Log(msg));
             var selectedModel = (ModelCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
 
@@ -594,7 +597,7 @@ public partial class MainWindow : Window
         {
             var inputFile = CreateFilteredFile() ?? _sourcePath!;
             var settings = BuildListingSettings() with { MakeListing = false };
-            var bridge = new PythonPipelineBridgeService(_v3Root, _legacyRoot);
+            var bridge = new PythonPipelineBridgeService(_v3Root, _pythonRoot);
             var progress = new Progress<string>(msg => Log(msg));
             var selectedModel = (ModelCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
 
@@ -621,7 +624,7 @@ public partial class MainWindow : Window
         {
             var inputFile = CreateFilteredFile() ?? _sourcePath!;
             var settings = BuildListingSettings();
-            var bridge = new PythonPipelineBridgeService(_v3Root, _legacyRoot);
+            var bridge = new PythonPipelineBridgeService(_v3Root, _pythonRoot);
             var progress = new Progress<string>(msg => Log(msg));
             var selectedModel = (ModelCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
 
@@ -769,7 +772,7 @@ public partial class MainWindow : Window
             if (inputFile == null) { SetRunning(false); return; }
 
             var settings = BuildListingSettings();
-            var bridge = new PythonPipelineBridgeService(_v3Root, _legacyRoot);
+            var bridge = new PythonPipelineBridgeService(_v3Root, _pythonRoot);
             var progress = new Progress<string>(msg => Log(msg));
             var selectedModel = (ModelCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
 
@@ -850,7 +853,7 @@ public partial class MainWindow : Window
                 Directory.Delete(chunksDir, true);
 
             // Python bridge로 phase=ocr_only 실행 (이미 OCR 결과가 엑셀에 포함되어 있으므로 OCR은 스킵되고 skill.md + 청크만 생성됨)
-            var bridgeService = new PythonPipelineBridgeService(_v3Root, _legacyRoot);
+            var bridgeService = new PythonPipelineBridgeService(_v3Root, _pythonRoot);
             var progress = new Progress<string>(msg => Log(msg));
             var selectedModel = (ModelCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
 

@@ -31,6 +31,10 @@ cafe24_token.json
 # Runtime / local
 job_history.json
 app_settings.json
+cafe24_upload_config.txt
+cafe24_token.txt
+user_stopwords.json
+data/ocr_learned_noise.json
 startup_error.log
 ~$*.xlsx
 .claude/
