@@ -69,6 +69,11 @@ public sealed class PythonPipelineBridgeService
         AddArg(psi, "--jpeg-q-min", listingSettings.JpegQualityMin.ToString());
         AddArg(psi, "--jpeg-q-max", listingSettings.JpegQualityMax.ToString());
         AddArg(psi, "--flip-lr", ToBoolText(listingSettings.FlipLeftRight));
+        if (!string.IsNullOrEmpty(listingSettings.LogoPathB))
+            AddArg(psi, "--logo-path-b", listingSettings.LogoPathB);
+        AddArg(psi, "--img-tag", listingSettings.ImgTag ?? string.Empty);
+        if (!string.IsNullOrEmpty(listingSettings.ImgTagB))
+            AddArg(psi, "--img-tag-b", listingSettings.ImgTagB);
         AddArg(psi, "--phase", phase);
         if (!string.IsNullOrEmpty(exportRoot))
             AddArg(psi, "--export-root", exportRoot);

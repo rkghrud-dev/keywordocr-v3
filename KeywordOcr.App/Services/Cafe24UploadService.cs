@@ -228,6 +228,149 @@ public sealed class Cafe24UploadService
         return new Cafe24UploadResult(workingDirectory, uploadWorkbookPath, logPath, folders.Count, successCount, errorCount, skippedCount);
     }
 
+    public async Task<Cafe24UploadResult> UploadBMarketAsync(
+        string sourcePath,
+        string exportRoot,
+        Cafe24UploadOptions? overrideOptions = null,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        Cafe24TokenState tokenState;
+        try
+        {
+            tokenState = _configStore.LoadTokenStateB();
+        }
+        catch (FileNotFoundException ex)
+        {
+            progress?.Report($"B마켓 업로드 스킵: {ex.Message}");
+            return new Cafe24UploadResult("", "", "", 0, 0, 0, 0);
+        }
+        ValidateTokenConfig(tokenState.Config);
+
+        var options = overrideOptions ?? _configStore.LoadUploadOptions(exportRoot);
+        if (string.IsNullOrWhiteSpace(options.ExportDir))
+            options.ExportDir = string.IsNullOrWhiteSpace(exportRoot) ? @"C:\code\exports" : exportRoot;
+
+        var workingDirectory = Cafe24UploadSupport.ResolveWorkingDirectory(sourcePath, exportRoot, options);
+        progress?.Report($"[B마켓] 작업 폴더: {workingDirectory}");
+
+        var uploadWorkbookPath = Cafe24UploadSupport.FindLatestFileInDirectory(workingDirectory, "업로드용_*.xlsx");
+        if (uploadWorkbookPath is null)
+        {
+            progress?.Report("[B마켓] 업로드용 엑셀을 찾지 못했습니다.");
+            return new Cafe24UploadResult(workingDirectory, "", "", 0, 0, 0, 0);
+        }
+
+        var keywordSourcePath = File.Exists(sourcePath) && sourcePath.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)
+            ? sourcePath : uploadWorkbookPath;
+        var keywordData = Cafe24UploadSupport.ReadProductKeywordData(keywordSourcePath, "B마켓");
+        var uploadNames = Cafe24UploadSupport.ReadUploadProductNames(uploadWorkbookPath);
+        var gptWorkbookPath = Cafe24UploadSupport.FindLatestFileInDirectory(workingDirectory, "상품전처리GPT_*.xlsx");
+        var optionPriceMap = Cafe24UploadSupport.LoadOptionSupplyPrices(gptWorkbookPath ?? uploadWorkbookPath);
+        var priceReview = Cafe24UploadSupport.LoadPriceReview(options.PriceDataPath);
+        var dateTag = Cafe24UploadSupport.ExtractDateTag(uploadWorkbookPath) ?? options.DateTag ?? DateTime.Now.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
+
+        // B마켓은 listing_images_B/ 폴더 사용
+        var imageRootBase = Cafe24UploadSupport.ResolveImageRoot(workingDirectory, options, dateTag);
+        var imageRootB = imageRootBase.Replace("listing_images", "listing_images_B");
+        if (!Directory.Exists(imageRootB))
+            imageRootB = imageRootBase; // fallback to A market images
+
+        var folders = Cafe24UploadSupport.GetGsFolders(imageRootB);
+        if (folders.Count == 0)
+        {
+            progress?.Report("[B마켓] GS 이미지 폴더를 찾지 못했습니다.");
+            return new Cafe24UploadResult(workingDirectory, uploadWorkbookPath, "", 0, 0, 0, 0);
+        }
+
+        progress?.Report($"[B마켓] 이미지 폴더: {imageRootB}");
+        progress?.Report($"[B마켓] 대상 상품: {folders.Count}개");
+
+        var products = await ExecuteWithRefreshAsync(tokenState, cfg => _apiClient.GetSellingProductsAsync(cfg, cancellationToken), cancellationToken);
+        progress?.Report($"[B마켓] Cafe24 판매중 상품 로드: {products.Count}개");
+
+        var productsByName = products
+            .GroupBy(product => product.ProductName, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+
+        var successCount = 0;
+        var errorCount = 0;
+        var skippedCount = 0;
+        var logRows = new List<Dictionary<string, string>>();
+
+        for (var index = 0; index < folders.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var folder = folders[index];
+            var gs = folder.Name.ToUpperInvariant();
+            var gs9 = gs.Length >= 9 ? gs[..9] : gs;
+            progress?.Report($"[B마켓] [{index + 1}/{folders.Count}] {gs} 처리 시작");
+
+            var (mainImagePath, additionalImagePaths) = Cafe24UploadSupport.PickImages(folder.FullName, options.MainIndex, options.AddStart, options.AddMax);
+            if (string.IsNullOrWhiteSpace(mainImagePath))
+            {
+                skippedCount += 1;
+                continue;
+            }
+
+            var matchedProduct = Cafe24UploadSupport.FindMatchingProduct(gs, uploadNames, products, productsByName, options.MatchMode, options.MatchPrefix);
+            if (matchedProduct is null)
+            {
+                skippedCount += 1;
+                progress?.Report($"[B마켓] [{index + 1}/{folders.Count}] {gs} 상품 매칭 실패");
+                continue;
+            }
+
+            var uploadSucceeded = false;
+            var uploadError = string.Empty;
+            for (var attempt = 0; attempt <= options.RetryCount; attempt++)
+            {
+                try
+                {
+                    await ExecuteWithRefreshAsync(tokenState, cfg => _apiClient.UploadMainImageAsync(cfg, matchedProduct.ProductNo, mainImagePath, cancellationToken), cancellationToken);
+                    await UploadAdditionalImagesWithRecoveryAsync(tokenState, matchedProduct.ProductNo, additionalImagePaths, progress, $"[B마켓] [{index + 1}/{folders.Count}] {gs}", cancellationToken);
+                    uploadSucceeded = true;
+                    break;
+                }
+                catch (Cafe24ReauthenticationRequiredException) { throw; }
+                catch (Exception ex) when (attempt < options.RetryCount)
+                {
+                    uploadError = Cafe24UploadSupport.UnwrapMessage(ex);
+                    await Task.Delay(TimeSpan.FromSeconds(options.RetryDelaySeconds), cancellationToken);
+                }
+                catch (Exception ex) { uploadError = Cafe24UploadSupport.UnwrapMessage(ex); break; }
+            }
+
+            if (!uploadSucceeded) { errorCount += 1; continue; }
+
+            // 상품명 / 검색어 업데이트 (B마켓 시트 데이터)
+            if (keywordData.TryGetValue(gs9, out var kwInfo) && !string.IsNullOrWhiteSpace(kwInfo.ProductName))
+            {
+                try
+                {
+                    var cleanName = System.Text.RegularExpressions.Regex.Replace(kwInfo.ProductName, @"GS\d{7,9}[A-Z]?\s*", "").Trim();
+                    if (!string.IsNullOrWhiteSpace(cleanName))
+                    {
+                        await ExecuteWithRefreshAsync(tokenState, cfg =>
+                            _apiClient.UpdateProductAsync(cfg, matchedProduct.ProductNo, cleanName, kwInfo.ProductTag, kwInfo.SearchKeyword, cancellationToken), cancellationToken);
+                    }
+                }
+                catch (Exception nameEx)
+                {
+                    progress?.Report($"[B마켓] [{index + 1}/{folders.Count}] {gs} 상품명 업데이트 실패: {Cafe24UploadSupport.UnwrapMessage(nameEx)}");
+                }
+            }
+
+            successCount += 1;
+            progress?.Report($"[B마켓] [{index + 1}/{folders.Count}] {gs} 업로드 완료");
+        }
+
+        var logPath = Cafe24UploadSupport.WriteLogWorkbook(logRows, workingDirectory, null);
+        progress?.Report($"[B마켓] 업로드 완료: 성공 {successCount} / 오류 {errorCount} / 스킵 {skippedCount}");
+
+        return new Cafe24UploadResult(workingDirectory, uploadWorkbookPath, logPath, folders.Count, successCount, errorCount, skippedCount);
+    }
+
     private async Task UploadAdditionalImagesWithRecoveryAsync(
         Cafe24TokenState tokenState,
         int productNo,

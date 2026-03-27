@@ -66,6 +66,9 @@ def main() -> int:
     parser.add_argument('--jpeg-q-min', default='88')
     parser.add_argument('--jpeg-q-max', default='92')
     parser.add_argument('--flip-lr', default='true')
+    parser.add_argument('--logo-path-b', default='')
+    parser.add_argument('--img-tag', default="<img src='https://gi.esmplus.com/rkghrud/상세1.jpg' />")
+    parser.add_argument('--img-tag-b', default='')
     parser.add_argument('--phase', default='full', choices=['full', 'images', 'analysis', 'ocr_only'])
     parser.add_argument('--export-root', default='')
     parser.add_argument('--model', default='claude-sonnet-4-6')
@@ -82,7 +85,7 @@ def main() -> int:
 
     cfg = PipelineConfig(
         file_path=str(Path(args.source).resolve()),
-        img_tag='',
+        img_tag=str(args.img_tag or '').strip(),
         tesseract_path='',
         model_keyword=args.model,
         model_longtail=args.model,
@@ -133,6 +136,9 @@ def main() -> int:
         phase=args.phase,
         export_root_override=str(args.export_root or '').strip(),
         chunk_size=int(args.chunk_size),
+        enable_b_market=True,
+        logo_path_b=str(getattr(args, 'logo_path_b', '') or '').strip(),
+        img_tag_b=str(getattr(args, 'img_tag_b', '') or '').strip(),
     )
 
     _status('작업 시작')

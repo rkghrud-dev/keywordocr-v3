@@ -271,6 +271,10 @@ _MAX_CHAR_LIMIT = 140
 _MAX_TOKEN_LEN = 7       # 토큰 최대 글자수 (합성어끼리 연결 방지)
 _MAX_CORE_COMPOUNDS = 3  # 핵심어 합성어 최대 개수 (클램프 중복 제한)
 
+# B마켓 글자수 규칙
+_MIN_CHAR_TARGET_B = 63
+_MAX_CHAR_LIMIT_B = 98
+
 
 _JOSA_SUFFIXES = re.compile(r"(을|를|에|의|은|는|가|로|와|과|에서|으로|하여|에도|까지)$")
 
@@ -333,6 +337,7 @@ def build_keyword_string(
     vision_analysis: dict[str, Any] | None,
     target_count: int = TARGET_DEFAULT,
     fallback_text: str = "",
+    market: str = "A",
 ) -> str:
     """Vision JSON + OCR 텍스트 기반 키워드 생성.
 
@@ -347,6 +352,14 @@ def build_keyword_string(
     - 90~140자 목표
     """
     try:
+        # 마켓별 글자수 규칙
+        if market == "B":
+            min_char = _MIN_CHAR_TARGET_B
+            max_char = _MAX_CHAR_LIMIT_B
+        else:
+            min_char = _MIN_CHAR_TARGET
+            max_char = _MAX_CHAR_LIMIT
+
         analysis = vision_analysis if isinstance(vision_analysis, dict) else {}
         axis = _extract_required_axes(analysis)
 
@@ -409,7 +422,7 @@ def build_keyword_string(
             return sum(len(t) for t in out) + max(0, len(out) - 1)
 
         def _is_full() -> bool:
-            return _char_len() >= _MAX_CHAR_LIMIT
+            return _char_len() >= max_char
 
         # ── Phase 1: 대표 합성어 1개 (PVC클램프 등) ──
         compound_mod_used = ""
@@ -491,16 +504,16 @@ def build_keyword_string(
                     _try_add(m)
 
         # ── 글자수 보강 ──
-        if _char_len() < _MIN_CHAR_TARGET:
+        if _char_len() < min_char:
             for cw in core_words:
                 _try_add(cw)
-                if _char_len() >= _MIN_CHAR_TARGET:
+                if _char_len() >= min_char:
                     break
 
-        if _char_len() < _MIN_CHAR_TARGET:
+        if _char_len() < min_char:
             for seg in sorted(_COMMON_SEGMENTS, key=lambda x: -len(x)):
                 _try_add(seg)
-                if _char_len() >= _MIN_CHAR_TARGET:
+                if _char_len() >= min_char:
                     break
 
         return " ".join(out).strip()

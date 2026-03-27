@@ -66,6 +66,31 @@ internal sealed class Cafe24ConfigStore
         return new Cafe24TokenState(configPath, config);
     }
 
+    public Cafe24TokenState LoadTokenStateB()
+    {
+        var sharedTokenJsonPath = Cafe24SharedTokenStore.GetDefaultPathB();
+        if (!File.Exists(sharedTokenJsonPath))
+            throw new FileNotFoundException("B마켓 토큰 파일을 찾지 못했습니다.", sharedTokenJsonPath);
+
+        var fileValues = Cafe24SharedTokenStore.LoadAsKeyValues(sharedTokenJsonPath);
+        var envValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        var config = new Cafe24TokenConfig
+        {
+            MallId = PickValue(fileValues, envValues, "MALL_ID", "CAFE24_MALL_ID"),
+            AccessToken = PickValue(fileValues, envValues, "ACCESS_TOKEN", "CAFE24_ACCESS_TOKEN"),
+            RefreshToken = PickValue(fileValues, envValues, "REFRESH_TOKEN", "CAFE24_REFRESH_TOKEN"),
+            ClientId = PickValue(fileValues, envValues, "CLIENT_ID", "CAFE24_CLIENT_ID"),
+            ClientSecret = PickValue(fileValues, envValues, "CLIENT_SECRET", "CAFE24_CLIENT_SECRET"),
+            RedirectUri = PickValue(fileValues, envValues, "REDIRECT_URI", "CAFE24_REDIRECT_URI"),
+            Scope = PickValue(fileValues, envValues, "SCOPE", "CAFE24_SCOPE"),
+            ShopNo = PickValue(fileValues, envValues, "SHOP_NO", "CAFE24_SHOP_NO", "1"),
+            ApiVersion = PickValue(fileValues, envValues, "API_VERSION", "CAFE24_API_VERSION", "2025-12-01")
+        };
+
+        return new Cafe24TokenState(sharedTokenJsonPath, config);
+    }
+
     public Cafe24UploadOptions LoadUploadOptions(string exportRoot)
     {
         var configPath = FindFirstExisting(

@@ -942,6 +942,8 @@
                                     <RowDefinition Height="28"/>
                                     <RowDefinition Height="28"/>
                                     <RowDefinition Height="28"/>
+                                    <RowDefinition Height="28"/>
+                                    <RowDefinition Height="28"/>
                                 </Grid.RowDefinitions>
 
                                 <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="로고 경로"/>
@@ -955,6 +957,19 @@
                                     <Button Grid.Column="1" Content="..." Width="30" Height="24" Margin="4,0,0,0"
                                             Background="#e0e0e0" FontSize="11" Cursor="Hand"
                                             Click="BrowseLogoPath_Click"/>
+                                </Grid>
+
+                                <TextBlock Grid.Row="0" Grid.Column="3" Style="{StaticResource FieldLabel}" Text="B마켓 로고"/>
+                                <Grid Grid.Row="0" Grid.Column="4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="SettingsLogoPathB" Grid.Column="0" Height="24" FontSize="11"
+                                             VerticalContentAlignment="Center" Padding="4,0"/>
+                                    <Button Grid.Column="1" Content="..." Width="30" Height="24" Margin="4,0,0,0"
+                                            Background="#e0e0e0" FontSize="11" Cursor="Hand"
+                                            Click="BrowseLogoPathB_Click"/>
                                 </Grid>
 
                                 <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="로고 비율(%)"/>
@@ -1002,6 +1017,15 @@
                                     <CheckBox x:Name="SettingsFlipLR" Content="좌우반전" IsChecked="True"
                                               FontSize="11"/>
                                 </StackPanel>
+
+                                <TextBlock Grid.Row="5" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="상세태그 A"/>
+                                <TextBox x:Name="SettingsImgTag" Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="4"
+                                         Height="24" FontSize="11" VerticalContentAlignment="Center" Padding="4,0"
+                                         Text="&lt;img src='https://gi.esmplus.com/rkghrud/상세1.jpg' /&gt;"/>
+
+                                <TextBlock Grid.Row="6" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="상세태그 B"/>
+                                <TextBox x:Name="SettingsImgTagB" Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="4"
+                                         Height="24" FontSize="11" VerticalContentAlignment="Center" Padding="4,0"/>
                             </Grid>
                         </Border>
 

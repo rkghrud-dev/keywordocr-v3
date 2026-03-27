@@ -177,6 +177,7 @@ def generate_market_keyword_packages(
     anchors=None,
     baseline=None,
     naver_keyword_table: str = "",
+    market: str = "A",
 ) -> MarketKeywordPackages:
     anchor_set = set(anchors or [])
     baseline_set = set(baseline or [])
@@ -209,6 +210,7 @@ def generate_market_keyword_packages(
         source_text=source_text,
         anchors=anchor_set,
         baseline=baseline_set,
+        market=market,
     )
     naver_tags = _build_naver_tags(
         bucketed=bucketed,
@@ -217,6 +219,7 @@ def generate_market_keyword_packages(
         source_text=source_text,
         anchors=anchor_set,
         baseline=baseline_set,
+        market=market,
     )
 
     search_source = coupang_tags or [_compact_phrase(x) for x in candidate_pool]
@@ -485,16 +488,31 @@ def _build_coupang_tags(
     source_text: str,
     anchors: set[str],
     baseline: set[str],
+    market: str = "A",
 ) -> list[str]:
-    plan = (
-        ("identity", 6),
-        ("usage_context", 4),
-        ("function", 4),
-        ("problem_solution", 3),
-        ("material_spec", 2),
-        ("audience_scene", 1),
-        ("synonyms", 2),
-    )
+    if market == "B":
+        # B마켓: 총 14개, 버킷순서 변경 (identity→function→usage→material→problem→audience→synonyms)
+        plan = (
+            ("identity", 4),
+            ("function", 3),
+            ("usage_context", 2),
+            ("material_spec", 2),
+            ("problem_solution", 1),
+            ("audience_scene", 1),
+            ("synonyms", 1),
+        )
+        max_tags = 14
+    else:
+        plan = (
+            ("identity", 6),
+            ("usage_context", 4),
+            ("function", 4),
+            ("problem_solution", 3),
+            ("material_spec", 2),
+            ("audience_scene", 1),
+            ("synonyms", 2),
+        )
+        max_tags = 20
     out: list[str] = []
     seen: set[str] = set()
 
@@ -516,21 +534,21 @@ def _build_coupang_tags(
         for value in bucketed.get(bucket, []):
             if push(value):
                 added += 1
-            if added >= quota or len(out) >= 20:
+            if added >= quota or len(out) >= max_tags:
                 break
-        if len(out) >= 20:
-            return out[:20]
+        if len(out) >= max_tags:
+            return out[:max_tags]
 
     for value in candidate_pool:
         push(value)
-        if len(out) >= 20:
-            return out[:20]
+        if len(out) >= max_tags:
+            return out[:max_tags]
 
     for value in _collect_adjacent_phrases(product_name, max_tokens=16, max_size=2):
         push(value)
-        if len(out) >= 20:
+        if len(out) >= max_tags:
             break
-    return out[:20]
+    return out[:max_tags]
 
 
 def _build_naver_tags(
@@ -540,16 +558,29 @@ def _build_naver_tags(
     source_text: str,
     anchors: set[str],
     baseline: set[str],
+    market: str = "A",
 ) -> list[str]:
-    plan = (
-        ("identity", 4),
-        ("usage_context", 2),
-        ("function", 2),
-        ("problem_solution", 1),
-        ("material_spec", 1),
-        ("audience_scene", 1),
-        ("synonyms", 1),
-    )
+    if market == "B":
+        # B마켓: 총 7개
+        plan = (
+            ("identity", 2),
+            ("function", 2),
+            ("usage_context", 1),
+            ("material_spec", 1),
+            ("synonyms", 1),
+        )
+        max_tags = 7
+    else:
+        plan = (
+            ("identity", 4),
+            ("usage_context", 2),
+            ("function", 2),
+            ("problem_solution", 1),
+            ("material_spec", 1),
+            ("audience_scene", 1),
+            ("synonyms", 1),
+        )
+        max_tags = 10
     out: list[str] = []
     seen: set[str] = set()
     char_budget = 100
@@ -575,21 +606,21 @@ def _build_naver_tags(
         for value in bucketed.get(bucket, []):
             if push(value):
                 added += 1
-            if added >= quota or len(out) >= 10:
+            if added >= quota or len(out) >= max_tags:
                 break
-        if len(out) >= 10:
-            return out[:10]
+        if len(out) >= max_tags:
+            return out[:max_tags]
 
     for value in candidate_pool:
         push(value)
-        if len(out) >= 10:
-            return out[:10]
+        if len(out) >= max_tags:
+            return out[:max_tags]
 
     for value in _collect_adjacent_phrases(product_name, max_tokens=16, max_size=2):
         push(value)
-        if len(out) >= 10:
+        if len(out) >= max_tags:
             break
-    return out[:10]
+    return out[:max_tags]
 
 
 def _extract_naver_candidates(naver_keyword_table: str) -> list[str]:

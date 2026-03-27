@@ -115,11 +115,13 @@ internal static class Cafe24UploadSupport
     }
 
     /// <summary>GS코드 → (상품명, 검색어설정, 검색키워드) 매핑을 엑셀에서 읽어옵니다.</summary>
-    public static Dictionary<string, (string ProductName, string ProductTag, string SearchKeyword)> ReadProductKeywordData(string workbookPath)
+    public static Dictionary<string, (string ProductName, string ProductTag, string SearchKeyword)> ReadProductKeywordData(string workbookPath, string sheetName = "분리추출후")
     {
         var result = new Dictionary<string, (string, string, string)>(StringComparer.OrdinalIgnoreCase);
         using var workbook = WorkbookFileLoader.OpenReadOnly(workbookPath);
-        var worksheet = workbook.Worksheets.Contains("분리추출후") ? workbook.Worksheet("분리추출후") : workbook.Worksheet(1);
+        var worksheet = workbook.Worksheets.Contains(sheetName) ? workbook.Worksheet(sheetName)
+            : workbook.Worksheets.Contains("분리추출후") ? workbook.Worksheet("분리추출후")
+            : workbook.Worksheet(1);
         var headers = BuildHeaderMap(worksheet);
 
         if (!headers.TryGetValue("상품명", out var nameCol)) return result;

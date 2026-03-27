@@ -54,6 +54,11 @@ public partial class MainWindow : Window
             ? _v3Root
             : Path.GetFullPath(Path.Combine(_v3Root, ".."));  // fallback: 구 중첩 구조
 
+        // Python import 경로: v3/backend/ (app/services/pipeline.py가 여기에 있음)
+        _pythonRoot = Path.Combine(_v3Root, "backend");
+        if (!Directory.Exists(Path.Combine(_pythonRoot, "app")))
+            _pythonRoot = _legacyRoot;  // fallback
+
         _settingsPath = Path.Combine(_legacyRoot, "app_settings.json");
 
         ProductList.ItemsSource = _products;
@@ -469,7 +474,10 @@ public partial class MainWindow : Window
             RotateZoom: ParseDouble(SettingsRotateZoom, 1.04),
             JpegQualityMin: ParseInt(SettingsJpegMin, 88),
             JpegQualityMax: ParseInt(SettingsJpegMax, 92),
-            FlipLeftRight: SettingsFlipLR.IsChecked == true
+            FlipLeftRight: SettingsFlipLR.IsChecked == true,
+            LogoPathB: SettingsLogoPathB.Text.Trim(),
+            ImgTag: SettingsImgTag.Text.Trim(),
+            ImgTagB: SettingsImgTagB.Text.Trim()
         );
         SaveAppSettings(s);
         return s;
@@ -495,6 +503,9 @@ public partial class MainWindow : Window
             if (s is null) return;
 
             SettingsLogoPath.Text = s.LogoPath;
+            SettingsLogoPathB.Text = s.LogoPathB;
+            SettingsImgTag.Text = s.ImgTag;
+            SettingsImgTagB.Text = s.ImgTagB;
             SettingsLogoRatio.Text = s.LogoRatio.ToString();
             SettingsLogoOpacity.Text = s.LogoOpacity.ToString();
             SettingsListingSize.Text = s.ListingSize.ToString();
@@ -1170,6 +1181,27 @@ public partial class MainWindow : Window
                 totalSkipped += result.SkippedCount;
 
                 Log($"── 파일 {i + 1} 완료: 등록 {result.CreatedCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount} ──");
+
+                // B마켓 신규등록
+                try
+                {
+                    StatusText.Text = $"B마켓 신규등록 중... ({i + 1}/{files.Count}) {Path.GetFileName(file)}";
+                    Log($"── [B마켓] 파일 {i + 1}/{files.Count}: {Path.GetFileName(file)} 처리 시작 ──");
+                    var resultB = await createService.CreateBMarketAsync(
+                        file, exportRoot, progress, _cts.Token);
+                    if (resultB.TotalCount > 0)
+                    {
+                        Log($"── [B마켓] 파일 {i + 1} 완료: 등록 {resultB.CreatedCount} / 오류 {resultB.ErrorCount} / 스킵 {resultB.SkippedCount} ──");
+                    }
+                }
+                catch (Cafe24ReauthenticationRequiredException exB)
+                {
+                    Log($"[B마켓] 재인증 필요: {exB.Message}");
+                }
+                catch (Exception exB)
+                {
+                    Log($"[B마켓] 신규등록 오류: {exB.Message}");
+                }
             }
 
             Log($"전체 신규등록 완료: 등록 {totalCreated} / 오류 {totalError} / 스킵 {totalSkipped} (파일 {files.Count}개)");
@@ -1275,8 +1307,27 @@ public partial class MainWindow : Window
                 uploadFile, _lastOutputRoot, options, progress, _cts.Token);
 
             _lastUploadLogPath = result.LogPath;
-            Log($"Cafe24 업로드 완료: 성공 {result.SuccessCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount}");
-            StatusText.Text = $"업로드 완료 (성공: {result.SuccessCount})";
+            Log($"Cafe24 A마켓 업로드 완료: 성공 {result.SuccessCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount}");
+
+            // B마켓 업로드
+            try
+            {
+                StatusText.Text = "B마켓 Cafe24 업로드 중...";
+                var resultB = await uploadService.UploadBMarketAsync(
+                    uploadFile, _lastOutputRoot, options, progress, _cts.Token);
+                if (resultB.TotalCount > 0)
+                    Log($"Cafe24 B마켓 업로드 완료: 성공 {resultB.SuccessCount} / 오류 {resultB.ErrorCount} / 스킵 {resultB.SkippedCount}");
+            }
+            catch (Cafe24ReauthenticationRequiredException exB)
+            {
+                Log($"B마켓 Cafe24 재인증 필요: {exB.Message}");
+            }
+            catch (Exception exB)
+            {
+                Log($"B마켓 업로드 오류 (A마켓은 성공): {exB.Message}");
+            }
+
+            StatusText.Text = $"업로드 완료 (A: {result.SuccessCount})";
             UploadSummaryText.Text = $"총 {result.TotalCount} | 성공 {result.SuccessCount} | 오류 {result.ErrorCount} | 스킵 {result.SkippedCount}";
             OpenUploadLogButton.IsEnabled = !string.IsNullOrEmpty(result.LogPath);
 
@@ -1342,6 +1393,28 @@ public partial class MainWindow : Window
                 uploadFile, _lastOutputRoot, progress, _cts.Token);
 
             Log($"신규등록 완료: 생성 {result.CreatedCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount}");
+
+            // B마켓 신규등록
+            try
+            {
+                StatusText.Text = "B마켓 신규상품 등록 중...";
+                Log("── [B마켓] 신규등록 시작 ──");
+                var resultB = await createService.CreateBMarketAsync(
+                    uploadFile, _lastOutputRoot, progress, _cts.Token);
+                if (resultB.TotalCount > 0)
+                {
+                    Log($"[B마켓] 신규등록 완료: 생성 {resultB.CreatedCount} / 오류 {resultB.ErrorCount} / 스킵 {resultB.SkippedCount}");
+                }
+            }
+            catch (Cafe24ReauthenticationRequiredException exB)
+            {
+                Log($"[B마켓] 재인증 필요: {exB.Message}");
+            }
+            catch (Exception exB)
+            {
+                Log($"[B마켓] 신규등록 오류: {exB.Message}");
+            }
+
             StatusText.Text = $"등록 완료 (생성: {result.CreatedCount})";
         }
         catch (OperationCanceledException) { Log("등록 취소됨"); StatusText.Text = "취소됨"; }
@@ -1847,6 +1920,24 @@ public partial class MainWindow : Window
                 uploadFile, job.OutputRoot, progress, _cts.Token);
 
             Log($"신규등록 완료: 생성 {result.CreatedCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount}");
+
+            // B마켓 신규등록
+            try
+            {
+                StatusText.Text = "B마켓 신규상품 등록 중...";
+                Log("── [B마켓] 신규등록 시작 ──");
+                var resultB = await createService.CreateBMarketAsync(
+                    uploadFile, job.OutputRoot, progress, _cts.Token);
+                if (resultB.TotalCount > 0)
+                {
+                    Log($"[B마켓] 신규등록 완료: 생성 {resultB.CreatedCount} / 오류 {resultB.ErrorCount} / 스킵 {resultB.SkippedCount}");
+                }
+            }
+            catch (Exception exB)
+            {
+                Log($"[B마켓] 신규등록 오류: {exB.Message}");
+            }
+
             StatusText.Text = $"등록 완료 (생성: {result.CreatedCount})";
         }
         catch (OperationCanceledException) { Log("등록 취소됨"); StatusText.Text = "취소됨"; }
@@ -1943,6 +2034,13 @@ public partial class MainWindow : Window
         var dlg = new OpenFileDialog { Filter = "이미지|*.png;*.jpg;*.jpeg|모든 파일|*.*", Title = "로고 파일 선택" };
         if (dlg.ShowDialog() == true)
             SettingsLogoPath.Text = dlg.FileName;
+    }
+
+    private void BrowseLogoPathB_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog { Filter = "이미지|*.png;*.jpg;*.jpeg|모든 파일|*.*", Title = "B마켓 로고 파일 선택" };
+        if (dlg.ShowDialog() == true)
+            SettingsLogoPathB.Text = dlg.FileName;
     }
 
     private void BrowseTokenPath_Click(object sender, RoutedEventArgs e)

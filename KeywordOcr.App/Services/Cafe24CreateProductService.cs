@@ -151,6 +151,152 @@ public sealed class Cafe24CreateProductService
         return new Cafe24CreateProductsResult(workingDirectory, uploadWorkbookPath, logPath, rows.Count, createdCount, skippedCount, errorCount);
     }
 
+    public async Task<Cafe24CreateProductsResult> CreateBMarketAsync(
+        string sourcePath,
+        string exportRoot,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        Cafe24TokenState tokenState;
+        try
+        {
+            tokenState = _configStore.LoadTokenStateB();
+        }
+        catch (FileNotFoundException ex)
+        {
+            progress?.Report($"[B마켓] 신규등록 스킵: {ex.Message}");
+            return new Cafe24CreateProductsResult("", "", "", 0, 0, 0, 0);
+        }
+        ValidateTokenConfig(tokenState.Config);
+
+        var options = _configStore.LoadUploadOptions(exportRoot);
+        var workingDirectory = Cafe24UploadSupport.ResolveWorkingDirectory(sourcePath, exportRoot, options);
+
+        var uploadWorkbookPath = File.Exists(sourcePath) && sourcePath.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)
+            ? sourcePath
+            : Cafe24UploadSupport.FindLatestFileInDirectory(workingDirectory, "업로드용_*.xlsx");
+        if (uploadWorkbookPath is null)
+        {
+            progress?.Report("[B마켓] 업로드용 엑셀을 찾지 못했습니다.");
+            return new Cafe24CreateProductsResult(workingDirectory, "", "", 0, 0, 0, 0);
+        }
+
+        var rows = ReadRows(uploadWorkbookPath, "B마켓");
+        if (rows.Count == 0)
+        {
+            progress?.Report("[B마켓] B마켓 시트에 등록할 행이 없습니다.");
+            return new Cafe24CreateProductsResult(workingDirectory, uploadWorkbookPath, "", 0, 0, 0, 0);
+        }
+
+        progress?.Report($"[B마켓] 신규등록 기준 파일: {Path.GetFileName(uploadWorkbookPath)}");
+        progress?.Report($"[B마켓] 대상 행 수: {rows.Count}개");
+
+        var priceReview = Cafe24UploadSupport.LoadPriceReview(options.PriceDataPath);
+        var dateTag = Cafe24UploadSupport.ExtractDateTag(uploadWorkbookPath) ?? options.DateTag ?? DateTime.Now.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
+
+        // B마켓은 listing_images_B/ 폴더 사용
+        var imageRootA = TryResolveImageRoot(workingDirectory, options, dateTag, progress);
+        string? imageRoot = null;
+        if (!string.IsNullOrWhiteSpace(imageRootA))
+        {
+            var imageRootB = imageRootA.Replace("listing_images", "listing_images_B");
+            imageRoot = Directory.Exists(imageRootB) ? imageRootB : imageRootA;
+        }
+
+        var existingProducts = await ExecuteWithRefreshAsync(tokenState, cfg => _apiClient.GetProductsAsync(cfg, false, cancellationToken), cancellationToken);
+        var existingByName = existingProducts
+            .Where(product => !string.IsNullOrWhiteSpace(product.ProductName))
+            .GroupBy(product => product.ProductName, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+
+        var createdCount = 0;
+        var skippedCount = 0;
+        var errorCount = 0;
+        var logRows = new List<Dictionary<string, string>>();
+
+        for (var index = 0; index < rows.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var row = rows[index];
+            var productName = GetValue(row, "상품명");
+            var customProductCode = GetValue(row, "자체 상품코드");
+            var gsCode = ExtractGsCode(row);
+            progress?.Report($"[B마켓] [{index + 1}/{rows.Count}] {productName} 신규등록 준비");
+
+            if (string.IsNullOrWhiteSpace(productName))
+            {
+                skippedCount += 1;
+                logRows.Add(Cafe24UploadSupport.CreateLogRow(gsCode, status: "SKIP_NO_NAME", error: "상품명이 비어 있습니다."));
+                continue;
+            }
+
+            var isDuplicate = MatchesExistingProduct(existingProducts, existingByName, productName, customProductCode, gsCode);
+
+            var request = BuildCreateRequest(row);
+            if (!request.TryGetValue("product_name", out var requestProductName) || string.IsNullOrWhiteSpace(requestProductName?.ToString()))
+            {
+                skippedCount += 1;
+                logRows.Add(Cafe24UploadSupport.CreateLogRow(gsCode, status: "SKIP_INVALID", error: "API 요청에 필요한 상품명이 없습니다."));
+                continue;
+            }
+
+            try
+            {
+                var productNo = await ExecuteWithRefreshAsync(tokenState, cfg => _apiClient.CreateProductAsync(cfg, request, cancellationToken), cancellationToken);
+                if (productNo <= 0)
+                {
+                    throw new InvalidDataException("[B마켓] 신규 등록 응답에서 product_no를 찾지 못했습니다.");
+                }
+
+                var priceStatus = "CREATE_ONLY";
+                var optionAdditionals = GetValue(row, "옵션추가금");
+                if (!string.IsNullOrWhiteSpace(optionAdditionals))
+                {
+                    priceStatus = await UpdateVariantPricesAsync(tokenState, productNo, optionAdditionals, progress, index, rows.Count, productName, cancellationToken);
+                }
+
+                var imageStatus = "NO_IMAGE";
+                if (!string.IsNullOrWhiteSpace(imageRoot) && !string.IsNullOrWhiteSpace(gsCode))
+                {
+                    imageStatus = await UploadImagesAsync(tokenState, imageRoot, gsCode, productNo, options, priceReview, cancellationToken);
+                }
+
+                createdCount += 1;
+                var statusLabel = isDuplicate ? "CREATED_DUP" : "CREATED";
+                var dupNote = isDuplicate ? " (중복상품)" : "";
+                logRows.Add(Cafe24UploadSupport.CreateLogRow(
+                    gsCode,
+                    productNo: productNo.ToString(CultureInfo.InvariantCulture),
+                    status: statusLabel,
+                    priceStatus: $"{priceStatus}|{imageStatus}",
+                    error: isDuplicate ? "중복상품입니다." : ""));
+                progress?.Report($"[B마켓] [{index + 1}/{rows.Count}] {productName} 신규등록 완료{dupNote} ({imageStatus})");
+
+                existingProducts.Add(new Cafe24Product(productNo, productName, customProductCode));
+                if (!existingByName.ContainsKey(productName))
+                {
+                    existingByName[productName] = new Cafe24Product(productNo, productName, customProductCode);
+                }
+            }
+            catch (Cafe24ReauthenticationRequiredException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                errorCount += 1;
+                logRows.Add(Cafe24UploadSupport.CreateLogRow(gsCode, status: "ERROR", error: Cafe24UploadSupport.UnwrapMessage(ex)));
+                progress?.Report($"[B마켓] [{index + 1}/{rows.Count}] {productName} 신규등록 실패: {Cafe24UploadSupport.UnwrapMessage(ex)}");
+            }
+        }
+
+        var logPath = Cafe24UploadSupport.WriteLogWorkbook(logRows, workingDirectory, null);
+        progress?.Report($"[B마켓] 신규등록 로그 저장: {logPath}");
+
+        return new Cafe24CreateProductsResult(workingDirectory, uploadWorkbookPath, logPath, rows.Count, createdCount, skippedCount, errorCount);
+    }
+
     private async Task<string> UpdateVariantPricesAsync(
         Cafe24TokenState tokenState,
         int productNo,
@@ -307,10 +453,12 @@ public sealed class Cafe24CreateProductService
         return request;
     }
 
-    private static List<Dictionary<string, string>> ReadRows(string workbookPath)
+    private static List<Dictionary<string, string>> ReadRows(string workbookPath, string sheetName = "분리추출후")
     {
         using var workbook = WorkbookFileLoader.OpenReadOnly(workbookPath);
-        var worksheet = workbook.Worksheets.Contains("분리추출후") ? workbook.Worksheet("분리추출후") : workbook.Worksheet(1);
+        var worksheet = workbook.Worksheets.Contains(sheetName) ? workbook.Worksheet(sheetName)
+            : workbook.Worksheets.Contains("분리추출후") ? workbook.Worksheet("분리추출후")
+            : workbook.Worksheet(1);
         var headerRow = worksheet.FirstRowUsed();
         if (headerRow is null)
         {

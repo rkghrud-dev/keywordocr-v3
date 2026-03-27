@@ -4505,24 +4505,22 @@ def merge_base_name_with_keywords(base_name: str, kw_line: str, max_words: int, 
 
 
 def insert_img_tag(html, img_tag):
-
-
+    if not img_tag:
+        return html
 
     html = "" if (html is None or (isinstance(html, float) and np.isnan(html))) else str(html)
 
-
-
     if img_tag in html: return html
 
-
-
     if html.startswith("<center>") and len(html) > 8:
-
-
-
         return html[:8] + img_tag + html[8:]
 
-
+    # <div style="text-align: center;" ...> 형태 처리
+    import re
+    m = re.match(r'(<div\s+style="text-align:\s*center;?"[^>]*>)', html, re.IGNORECASE)
+    if m:
+        insert_pos = m.end()
+        return html[:insert_pos] + img_tag + html[insert_pos:]
 
     return img_tag + html
 

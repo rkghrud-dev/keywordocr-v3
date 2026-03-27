@@ -19,4 +19,7 @@ public sealed record ListingImageSettings(
     int TrimTolerance = 8,
     int JpegQualityMin = 88,
     int JpegQualityMax = 92,
-    bool FlipLeftRight = true);
+    bool FlipLeftRight = true,
+    string LogoPathB = "",
+    string ImgTag = "<img src='https://gi.esmplus.com/rkghrud/상세1.jpg' />",
+    string ImgTagB = "");
