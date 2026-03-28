@@ -673,6 +673,10 @@
                                                     <Setter TargetName="thumbBorder" Property="BorderBrush" Value="#2196F3"/>
                                                     <Setter TargetName="thumbBorder" Property="Background" Value="#E3F2FD"/>
                                                 </DataTrigger>
+                                                <DataTrigger Binding="{Binding IsMainB}" Value="True">
+                                                    <Setter TargetName="thumbBorder" Property="BorderBrush" Value="#FF9800"/>
+                                                    <Setter TargetName="thumbBorder" Property="Background" Value="#FFF3E0"/>
+                                                </DataTrigger>
                                                 <DataTrigger Binding="{Binding IsAdditional}" Value="True">
                                                     <Setter TargetName="thumbBorder" Property="BorderBrush" Value="#4CAF50"/>
                                                     <Setter TargetName="thumbBorder" Property="Background" Value="#E8F5E9"/>
@@ -689,12 +693,16 @@
                     <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,8,0,0">
                         <Border Width="16" Height="16" BorderBrush="#2196F3" BorderThickness="3"
                                 CornerRadius="2" Margin="0,0,4,0" Background="#E3F2FD"/>
-                        <TextBlock Text="대표이미지 (좌클릭)" FontSize="11" Foreground="#555"
-                                   VerticalAlignment="Center" Margin="0,0,16,0"/>
+                        <TextBlock Text="A대표 (좌클릭)" FontSize="11" Foreground="#555"
+                                   VerticalAlignment="Center" Margin="0,0,12,0"/>
+                        <Border Width="16" Height="16" BorderBrush="#FF9800" BorderThickness="3"
+                                CornerRadius="2" Margin="0,0,4,0" Background="#FFF3E0"/>
+                        <TextBlock Text="B대표 (더블클릭→클릭)" FontSize="11" Foreground="#555"
+                                   VerticalAlignment="Center" Margin="0,0,12,0"/>
                         <Border Width="16" Height="16" BorderBrush="#4CAF50" BorderThickness="3"
                                 CornerRadius="2" Margin="0,0,4,0" Background="#E8F5E9"/>
-                        <TextBlock Text="추가이미지 (우클릭)" FontSize="11" Foreground="#555"
-                                   VerticalAlignment="Center" Margin="0,0,16,0"/>
+                        <TextBlock Text="추가 (우클릭)" FontSize="11" Foreground="#555"
+                                   VerticalAlignment="Center" Margin="0,0,12,0"/>
                         <Border Width="16" Height="16" BorderBrush="#ddd" BorderThickness="3"
                                 CornerRadius="2" Margin="0,0,4,0"/>
                         <TextBlock Text="미선택" FontSize="11" Foreground="#888"

@@ -37,6 +37,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<string> _imageGsCodes = new();
     private readonly ObservableCollection<ImageThumbnailItem> _imageThumbnails = new();
     private readonly Dictionary<string, ImageSelection> _imageSelections = new(StringComparer.OrdinalIgnoreCase);
+    private bool _selectingBMarket; // true면 B마켓 대표 선택 모드
     private string? _imageListingRoot;
     private JobHistoryService? _jobHistory;
     private string _settingsPath = "";
@@ -915,6 +916,15 @@ public partial class MainWindow : Window
         _testOutputRoot = result.OutputRoot;
         TestOutputPathText.Text = $"결과 폴더: {result.OutputRoot}";
         TestOpenOutputButton.IsEnabled = true;
+
+        // OCR 제외 모드용 폴더 자동 설정 (재실행 시 폴더 재선택 불필요)
+        _testSkipOcrFolder = result.OutputRoot;
+        TestSkipOcrFolderText.Text = result.OutputRoot;
+
+        // 이미지 선택 탭 자동 로드 (listing_images 폴더가 있으면)
+        var listingDir = Path.Combine(result.OutputRoot, "listing_images");
+        if (Directory.Exists(listingDir) && Directory.GetDirectories(listingDir).Length > 0)
+            LoadListingImagesFromRoot(result.OutputRoot);
 
         var skillMd = Path.Combine(result.OutputRoot, "keyword_skill.md");
         var skillMdExt = Path.Combine(result.OutputRoot, "keyword_skill_extended.md");
@@ -2439,6 +2449,8 @@ public partial class MainWindow : Window
     private void ImageGsListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         _imageThumbnails.Clear();
+        _selectingBMarket = false;
+        ImageSelectionStatus.Text = $"{_imageGsCodes.Count}개 상품 — A마켓 대표 선택";
         if (ImageGsListBox.SelectedItem is not string gs || _imageListingRoot == null) return;
 
         var folder = Path.Combine(_imageListingRoot, gs);
@@ -2460,6 +2472,7 @@ public partial class MainWindow : Window
                 FilePath = files[i],
                 Thumbnail = LoadThumbnail(files[i]),
                 IsMain = selection?.MainIndex == i,
+                IsMainB = selection?.MainIndexB == i,
                 IsAdditional = selection?.AdditionalIndices?.Contains(i) == true,
             };
             _imageThumbnails.Add(item);
@@ -2471,22 +2484,40 @@ public partial class MainWindow : Window
         if (sender is not FrameworkElement fe || fe.DataContext is not ImageThumbnailItem clicked) return;
         if (ImageGsListBox.SelectedItem is not string gs) return;
 
-        // 대표이미지 선택
-        foreach (var item in _imageThumbnails)
-            item.IsMain = false;
-        clicked.IsMain = true;
-        clicked.IsAdditional = false;
-        UpdateSelectionForGs(gs);
-
-        // 더블클릭이면 다음 GS코드로 이동
-        if (e.ClickCount >= 2)
+        if (_selectingBMarket)
         {
+            // B마켓 대표이미지 선택
+            foreach (var item in _imageThumbnails)
+                item.IsMainB = false;
+            clicked.IsMainB = true;
+            clicked.IsAdditional = false;
+            UpdateSelectionForGs(gs);
+
+            // B마켓 선택 완료 → 다음 상품으로 이동
+            _selectingBMarket = false;
+            ImageSelectionStatus.Text = $"{_imageGsCodes.Count}개 상품 — A마켓 대표 선택";
             var currentIndex = ImageGsListBox.SelectedIndex;
             if (currentIndex < ImageGsListBox.Items.Count - 1)
             {
                 ImageGsListBox.SelectedIndex = currentIndex + 1;
                 ImageGsListBox.ScrollIntoView(ImageGsListBox.SelectedItem);
             }
+            e.Handled = true;
+            return;
+        }
+
+        // A마켓 대표이미지 선택
+        foreach (var item in _imageThumbnails)
+            item.IsMain = false;
+        clicked.IsMain = true;
+        clicked.IsAdditional = false;
+        UpdateSelectionForGs(gs);
+
+        // 더블클릭이면 B마켓 선택 모드로 전환
+        if (e.ClickCount >= 2)
+        {
+            _selectingBMarket = true;
+            ImageSelectionStatus.Text = $"{_imageGsCodes.Count}개 상품 — B마켓 대표 선택 (클릭하세요)";
             e.Handled = true;
         }
     }
@@ -2505,8 +2536,9 @@ public partial class MainWindow : Window
     private void UpdateSelectionForGs(string gs)
     {
         var mainItem = _imageThumbnails.FirstOrDefault(t => t.IsMain);
+        var mainBItem = _imageThumbnails.FirstOrDefault(t => t.IsMainB);
         var addItems = _imageThumbnails.Where(t => t.IsAdditional).Select(t => t.Index).ToList();
-        _imageSelections[gs] = new ImageSelection(mainItem?.Index, addItems);
+        _imageSelections[gs] = new ImageSelection(mainItem?.Index, addItems, mainBItem?.Index);
     }
 
     private void SaveImageSelection_Click(object sender, RoutedEventArgs e)
@@ -2519,7 +2551,7 @@ public partial class MainWindow : Window
         var dict = new Dictionary<string, object>();
         foreach (var kvp in _imageSelections)
         {
-            dict[kvp.Key] = new { main = kvp.Value.MainIndex, additional = kvp.Value.AdditionalIndices };
+            dict[kvp.Key] = new { main = kvp.Value.MainIndex, mainB = kvp.Value.MainIndexB, additional = kvp.Value.AdditionalIndices };
         }
 
         var json = JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true });
@@ -2553,13 +2585,16 @@ public partial class MainWindow : Window
 
                 if (prop.Value.TryGetProperty("main", out var mainEl) && mainEl.ValueKind == JsonValueKind.Number)
                     mainIdx = mainEl.GetInt32();
+                int? mainIdxB = null;
+                if (prop.Value.TryGetProperty("mainB", out var mainBEl) && mainBEl.ValueKind == JsonValueKind.Number)
+                    mainIdxB = mainBEl.GetInt32();
                 if (prop.Value.TryGetProperty("additional", out var addEl) && addEl.ValueKind == JsonValueKind.Array)
                 {
                     foreach (var item in addEl.EnumerateArray())
                         if (item.ValueKind == JsonValueKind.Number) addIndices.Add(item.GetInt32());
                 }
 
-                _imageSelections[prop.Name] = new ImageSelection(mainIdx, addIndices);
+                _imageSelections[prop.Name] = new ImageSelection(mainIdx, addIndices, mainIdxB);
             }
             Log($"이미지 선택 불러옴: {_imageSelections.Count}개");
         }
@@ -2642,6 +2677,7 @@ public class ImageThumbnailItem : INotifyPropertyChanged
 {
     private bool _isMain;
     private bool _isAdditional;
+    private bool _isMainB;
 
     public int Index { get; set; }
     public int DisplayNumber { get; set; }
@@ -2674,8 +2710,25 @@ public class ImageThumbnailItem : INotifyPropertyChanged
         }
     }
 
-    public string StatusText => IsMain ? $"#{DisplayNumber} 대표" : IsAdditional ? $"#{DisplayNumber} 추가" : $"#{DisplayNumber}";
-    public string StatusColor => IsMain ? "#2196F3" : IsAdditional ? "#4CAF50" : "#888";
+    public bool IsMainB
+    {
+        get => _isMainB;
+        set
+        {
+            if (_isMainB == value) return;
+            _isMainB = value;
+            OnPropertyChanged(nameof(IsMainB));
+            OnPropertyChanged(nameof(StatusText));
+            OnPropertyChanged(nameof(StatusColor));
+        }
+    }
+
+    public string StatusText => IsMain && IsMainB ? $"#{DisplayNumber} A+B대표"
+        : IsMain ? $"#{DisplayNumber} A대표"
+        : IsMainB ? $"#{DisplayNumber} B대표"
+        : IsAdditional ? $"#{DisplayNumber} 추가"
+        : $"#{DisplayNumber}";
+    public string StatusColor => IsMain || IsMainB ? "#2196F3" : IsAdditional ? "#4CAF50" : "#888";
 
     public event PropertyChangedEventHandler? PropertyChanged;
     private void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));

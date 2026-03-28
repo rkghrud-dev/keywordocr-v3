@@ -94,7 +94,7 @@ internal sealed record Cafe24Variant(string VariantCode, IReadOnlyList<string> O
 
 internal sealed record OptionSupplyItem(string Suffix, decimal SupplyPrice);
 
-internal sealed record ImageSelection(int? MainIndex, List<int> AdditionalIndices);
+internal sealed record ImageSelection(int? MainIndex, List<int> AdditionalIndices, int? MainIndexB = null);
 
 internal sealed class PriceReviewData
 {

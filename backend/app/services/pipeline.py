@@ -3462,6 +3462,34 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                 df_b_market[detail_col] = df_b_market[detail_col].apply(
                     lambda x: str(x or '').replace(cfg.img_tag, '') if x else x
                 )
+        # B마켓 옵션값 차별화: 쿠팡 동일상품 매칭 방지
+        _opt_col = None
+        for _c in df_b_market.columns:
+            if str(_c).strip() in ("옵션입력",):
+                _opt_col = _c
+                break
+        if _opt_col:
+            _QTY_RE = re.compile(r'\d+\s*[Pp]$|\d+\s*개$|\d+\s*세트$|\d+\s*매$|\d+\s*장$|\d+\s*ea$', re.IGNORECASE)
+            def _differentiate_option(val):
+                val = str(val or "").strip()
+                if not val.startswith("옵션{"):
+                    return val
+                inner = val[len("옵션{"):-1] if val.endswith("}") else val[len("옵션{"):]
+                parts = inner.split("|")
+                new_parts = []
+                for p in parts:
+                    p = p.strip()
+                    if not p:
+                        continue
+                    # "A 6cm" → code="A", opt_val="6cm"
+                    opt_val = p[2:] if len(p) > 2 and p[1] == " " else p
+                    if _QTY_RE.search(opt_val):
+                        new_parts.append(p)  # 이미 수량 있으면 그대로
+                    else:
+                        new_parts.append(f"{p} 1개")
+                return "옵션{" + "|".join(new_parts) + "}"
+            df_b_market[_opt_col] = df_b_market[_opt_col].apply(_differentiate_option)
+
         _status(status_cb, f"B마켓 시트 생성: {len(b_market_rows)}개 상품")
 
     with pd.ExcelWriter(save_path, engine="openpyxl") as writer:
