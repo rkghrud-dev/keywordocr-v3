@@ -944,6 +944,8 @@
                                     <RowDefinition Height="28"/>
                                     <RowDefinition Height="28"/>
                                     <RowDefinition Height="28"/>
+                                    <RowDefinition Height="28"/>
+                                    <RowDefinition Height="28"/>
                                 </Grid.RowDefinitions>
 
                                 <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="로고 경로"/>
@@ -1026,6 +1028,38 @@
                                 <TextBlock Grid.Row="6" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="상세태그 B"/>
                                 <TextBox x:Name="SettingsImgTagB" Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="4"
                                          Height="24" FontSize="11" VerticalContentAlignment="Center" Padding="4,0"/>
+
+                                <TextBlock Grid.Row="7" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="A 상품명"/>
+                                <StackPanel Grid.Row="7" Grid.Column="1" Orientation="Horizontal">
+                                    <TextBox x:Name="SettingsANameMin" Width="40" Height="22" FontSize="11"
+                                             Text="80" TextAlignment="Center" VerticalContentAlignment="Center"/>
+                                    <TextBlock Text=" ~ " FontSize="11" Foreground="#888" VerticalAlignment="Center"/>
+                                    <TextBox x:Name="SettingsANameMax" Width="40" Height="22" FontSize="11"
+                                             Text="100" TextAlignment="Center" VerticalContentAlignment="Center"/>
+                                    <TextBlock Text=" 자" FontSize="11" Foreground="#888" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <TextBlock Grid.Row="7" Grid.Column="3" Style="{StaticResource FieldLabel}" Text="B 상품명"/>
+                                <StackPanel Grid.Row="7" Grid.Column="4" Orientation="Horizontal">
+                                    <TextBox x:Name="SettingsBNameMin" Width="40" Height="22" FontSize="11"
+                                             Text="63" TextAlignment="Center" VerticalContentAlignment="Center"/>
+                                    <TextBlock Text=" ~ " FontSize="11" Foreground="#888" VerticalAlignment="Center"/>
+                                    <TextBox x:Name="SettingsBNameMax" Width="40" Height="22" FontSize="11"
+                                             Text="98" TextAlignment="Center" VerticalContentAlignment="Center"/>
+                                    <TextBlock Text=" 자" FontSize="11" Foreground="#888" VerticalAlignment="Center"/>
+                                </StackPanel>
+
+                                <TextBlock Grid.Row="8" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="A 태그수"/>
+                                <StackPanel Grid.Row="8" Grid.Column="1" Orientation="Horizontal">
+                                    <TextBox x:Name="SettingsATagCount" Width="40" Height="22" FontSize="11"
+                                             Text="20" TextAlignment="Center" VerticalContentAlignment="Center"/>
+                                    <TextBlock Text=" 개" FontSize="11" Foreground="#888" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <TextBlock Grid.Row="8" Grid.Column="3" Style="{StaticResource FieldLabel}" Text="B 태그수"/>
+                                <StackPanel Grid.Row="8" Grid.Column="4" Orientation="Horizontal">
+                                    <TextBox x:Name="SettingsBTagCount" Width="40" Height="22" FontSize="11"
+                                             Text="14" TextAlignment="Center" VerticalContentAlignment="Center"/>
+                                    <TextBlock Text=" 개" FontSize="11" Foreground="#888" VerticalAlignment="Center"/>
+                                </StackPanel>
                             </Grid>
                         </Border>
 

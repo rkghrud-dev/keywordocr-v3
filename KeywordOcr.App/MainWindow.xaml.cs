@@ -203,26 +203,33 @@ public partial class MainWindow : Window
         var headerRow = ws.FirstRowUsed();
         if (headerRow == null) return results;
 
-        int codeCol = -1, nameCol = -1;
+        int nameCol = -1;
+        var codeCols = new List<int>();
         var lastCol = headerRow.LastCellUsed()?.Address.ColumnNumber ?? 0;
 
         for (int c = 1; c <= lastCol; c++)
         {
             var header = headerRow.Cell(c).GetString().Trim();
-            if (codeCol < 0 && CodeColumns.Any(h => h.Equals(header, StringComparison.OrdinalIgnoreCase)))
-                codeCol = c;
+            if (CodeColumns.Any(h => h.Equals(header, StringComparison.OrdinalIgnoreCase)))
+                codeCols.Add(c);
             if (nameCol < 0 && NameColumns.Any(h => h.Equals(header, StringComparison.OrdinalIgnoreCase)))
                 nameCol = c;
         }
 
-        if (codeCol < 0) return results;
+        if (codeCols.Count == 0) return results;
 
         var lastRow = ws.LastRowUsed()?.RowNumber() ?? 0;
         var seen = new HashSet<string>();
 
         for (int r = headerRow.RowNumber() + 1; r <= lastRow; r++)
         {
-            var code = ws.Cell(r, codeCol).GetString().Trim();
+            // 코드 컬럼들 중 비어있지 않은 첫 번째 값 사용
+            var code = "";
+            foreach (var cc in codeCols)
+            {
+                code = ws.Cell(r, cc).GetString().Trim();
+                if (!string.IsNullOrEmpty(code)) break;
+            }
             if (string.IsNullOrEmpty(code)) continue;
 
             var name = nameCol > 0 ? ws.Cell(r, nameCol).GetString().Trim() : "";
@@ -477,7 +484,13 @@ public partial class MainWindow : Window
             FlipLeftRight: SettingsFlipLR.IsChecked == true,
             LogoPathB: SettingsLogoPathB.Text.Trim(),
             ImgTag: SettingsImgTag.Text.Trim(),
-            ImgTagB: SettingsImgTagB.Text.Trim()
+            ImgTagB: SettingsImgTagB.Text.Trim(),
+            ANameMin: ParseInt(SettingsANameMin, 80),
+            ANameMax: ParseInt(SettingsANameMax, 100),
+            BNameMin: ParseInt(SettingsBNameMin, 63),
+            BNameMax: ParseInt(SettingsBNameMax, 98),
+            ATagCount: ParseInt(SettingsATagCount, 20),
+            BTagCount: ParseInt(SettingsBTagCount, 14)
         );
         SaveAppSettings(s);
         return s;
@@ -517,6 +530,12 @@ public partial class MainWindow : Window
             SettingsSmallRotate.IsChecked = s.UseSmallRotate;
             SettingsFlipLR.IsChecked = s.FlipLeftRight;
             MakeListingCheck.IsChecked = s.MakeListing;
+            SettingsANameMin.Text = s.ANameMin.ToString();
+            SettingsANameMax.Text = s.ANameMax.ToString();
+            SettingsBNameMin.Text = s.BNameMin.ToString();
+            SettingsBNameMax.Text = s.BNameMax.ToString();
+            SettingsATagCount.Text = s.ATagCount.ToString();
+            SettingsBTagCount.Text = s.BTagCount.ToString();
 
             // 로고 위치 콤보박스
             foreach (ComboBoxItem item in SettingsLogoPos.Items)

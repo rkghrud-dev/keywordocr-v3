@@ -22,4 +22,10 @@ public sealed record ListingImageSettings(
     bool FlipLeftRight = true,
     string LogoPathB = "",
     string ImgTag = "<img src='https://gi.esmplus.com/rkghrud/상세1.jpg' />",
-    string ImgTagB = "");
+    string ImgTagB = "",
+    int ANameMin = 80,
+    int ANameMax = 100,
+    int BNameMin = 63,
+    int BNameMax = 98,
+    int ATagCount = 20,
+    int BTagCount = 14);

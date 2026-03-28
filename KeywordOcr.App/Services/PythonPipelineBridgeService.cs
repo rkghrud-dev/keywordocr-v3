@@ -74,6 +74,12 @@ public sealed class PythonPipelineBridgeService
         AddArg(psi, "--img-tag", listingSettings.ImgTag ?? string.Empty);
         if (!string.IsNullOrEmpty(listingSettings.ImgTagB))
             AddArg(psi, "--img-tag-b", listingSettings.ImgTagB);
+        AddArg(psi, "--a-name-min", listingSettings.ANameMin.ToString());
+        AddArg(psi, "--a-name-max", listingSettings.ANameMax.ToString());
+        AddArg(psi, "--b-name-min", listingSettings.BNameMin.ToString());
+        AddArg(psi, "--b-name-max", listingSettings.BNameMax.ToString());
+        AddArg(psi, "--a-tag-count", listingSettings.ATagCount.ToString());
+        AddArg(psi, "--b-tag-count", listingSettings.BTagCount.ToString());
         AddArg(psi, "--phase", phase);
         if (!string.IsNullOrEmpty(exportRoot))
             AddArg(psi, "--export-root", exportRoot);

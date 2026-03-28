@@ -69,6 +69,12 @@ def main() -> int:
     parser.add_argument('--logo-path-b', default='')
     parser.add_argument('--img-tag', default="<img src='https://gi.esmplus.com/rkghrud/상세1.jpg' />")
     parser.add_argument('--img-tag-b', default='')
+    parser.add_argument('--a-name-min', default='80')
+    parser.add_argument('--a-name-max', default='100')
+    parser.add_argument('--b-name-min', default='63')
+    parser.add_argument('--b-name-max', default='98')
+    parser.add_argument('--a-tag-count', default='20')
+    parser.add_argument('--b-tag-count', default='14')
     parser.add_argument('--phase', default='full', choices=['full', 'images', 'analysis', 'ocr_only'])
     parser.add_argument('--export-root', default='')
     parser.add_argument('--model', default='claude-sonnet-4-6')
@@ -139,6 +145,12 @@ def main() -> int:
         enable_b_market=True,
         logo_path_b=str(getattr(args, 'logo_path_b', '') or '').strip(),
         img_tag_b=str(getattr(args, 'img_tag_b', '') or '').strip(),
+        a_name_min=int(args.a_name_min),
+        a_name_max=int(args.a_name_max),
+        b_name_min=int(args.b_name_min),
+        b_name_max=int(args.b_name_max),
+        a_tag_count=int(args.a_tag_count),
+        b_tag_count=int(args.b_tag_count),
     )
 
     _status('작업 시작')

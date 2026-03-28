@@ -183,6 +183,14 @@ class PipelineConfig:
     logo_path_b: str = ""            # B마켓 로고 경로
     img_tag_b: str = ""              # B마켓 상세 이미지 태그
 
+    # 상품명/태그 길이 설정
+    a_name_min: int = 80
+    a_name_max: int = 100
+    b_name_min: int = 63
+    b_name_max: int = 98
+    a_tag_count: int = 20
+    b_tag_count: int = 14
+
 
 
 def _status(cb, msg: str) -> None:
@@ -313,7 +321,10 @@ def _split_upload_excel(upload_path: str, export_root: str, chunk_size: int, dat
     return chunk_files
 
 
-def _generate_keyword_skill_md(export_root: str, upload_path: str, date_tag: str, chunk_size: int = 0, status_cb=None):
+def _generate_keyword_skill_md(export_root: str, upload_path: str, date_tag: str, chunk_size: int = 0, status_cb=None,
+                               a_name_min: int = 80, a_name_max: int = 100,
+                               b_name_min: int = 63, b_name_max: int = 98,
+                               a_tag_count: int = 20, b_tag_count: int = 14):
     """ocr_only 모드에서 LLM 키워드 생성용 지시서(keyword_skill.md)를 생성."""
     md_path = os.path.join(export_root, "keyword_skill.md")
     llm_result_dir = os.path.join(export_root, "llm_result")
@@ -376,17 +387,27 @@ OCR결과 시트의 텍스트를 반드시 참고하여 상품의 실제 특성(
 
 ### 2단계: 상품명 작성
 - 공백으로 구분된 키워드 나열
-- **80~100자** 범위로 최대한 채우세요 (쿠팡·네이버 모두 100자 제한). 너무 짧으면 검색 노출이 줄어듭니다.
-- **구조: [핵심상품명(표준명)] + [대표옵션/규격] + [핵심속성] + [용도/사용처] + [별칭/동의어]**
+- **{a_name_min}~{a_name_max}자** 범위로 최대한 채우세요. 너무 짧으면 검색 노출이 줄어듭니다.
+- **구조 (의미 순서 필수)**: [핵심상품명 + 규격] → [목적(2~3개)] → [특징(2~3개)] → [사용처(2~3개)] → [별칭/동의어]
+  - 핵심상품명: 원본 상품명의 고정 명칭 (예: `가구 연결 볼트 35mm`)
+  - 목적: 이 상품이 해결하는 문제/기능 (예: `체결`, `고정`, `연결`)
+  - 특징: 소재/형태/방식 등 (예: `니켈 도금`, `편심`, `캠록`)
+  - 사용처: 어디에 쓰이는지 (예: `가구`, `캐비닛`, `서랍장`)
+- A마켓은 **확장형**: 각 그룹에서 2~3개씩 단어를 넣어 풍부하게 표현
 - **동의어 활용**: 같은 단어를 반복하지 말고, 두 번째 언급부터는 **동의어/별칭**을 사용하세요
   - 예: `구리스 호스` → 이후에는 `그리스`로, `호스클램프` → 이후에는 `호스밴드`로
-  - 예: `걸레` → `청소포`, `전구` → `램프`, `수도꼭지` → `수전`
-- **사용처/용도를 충분히 넣으세요**: 이 상품을 어디서/어떻게 쓰는지 (차량, 자동차, 중장비, 산업현장, 가정, 사무실, 욕실 등)
+- **사용처/용도를 충분히 넣으세요**: 이 상품을 어디서/어떻게 쓰는지
 - 예시:
-  - 원본 `구리스 호스 30cm` → `구리스 호스 30cm 고압 스프링 연장 연결 그리스 건 커플러 호환 협소 공간 차량 중장비 산업용 정비 윤활 주입 노즐 교체 1P`
-  - 원본 `유리문 슬라이딩 레일롤러 호차` → `유리문 슬라이딩 레일 롤러 호차 장식장 진열장 도어 황동 5mm 4P 무타공 교체 설치 가구 수리 부속`
-  - 원본 `창문 잠금후크` → `창문 잠금 후크 방충망 미닫이 걸쇠 안전장치 PP 강철 창호부속 방범용 실내 베란다 시건 장치`
-  - 원본 `U형 PVC 클램프 14mm` → `U형 PVC 클램프 14mm 전선 배관 호스 고정 브라켓 나사 고정 배선 정리 벽면 천장 매립 전기 작업`
+  - 원본 `가구 연결 볼트 35mm` → `가구 연결 볼트 35mm 편심 체결 고정 조립 니켈 도금 캠록 801 커넥터 캐비닛 서랍장 붙박이장 조립가구 부속`
+  - 원본 `구리스 호스 30cm` → `구리스 호스 30cm 고압 윤활 주입 연장 연결 스프링 그리스 건 커플러 차량 중장비 산업용 정비`
+  - 원본 `창문 잠금후크` → `창문 잠금 후크 방충망 고정 시건 미닫이 걸쇠 PP 강철 창호부속 실내 베란다 방범용`
+
+### A/B 마켓 토큰 분산 배치 (중요)
+전체 후보 토큰을 먼저 충분히 뽑은 뒤, A마켓과 B마켓에 **교차 배치**하세요.
+- 같은 토큰을 A/B에 전부 반복하지 마세요
+- 예: 목적 후보가 5개면 → A마켓 3개, B마켓 2개로 나눠서 배치
+- 특징/사용처도 같은 방식으로 분산
+- 이렇게 하면 두 마켓을 합쳤을 때 검색 커버리지가 최대화됩니다
 
 ### 띄어쓰기 규칙 (중요)
 - **자연스러운 띄어쓰기 1회만** 사용 — 의미 단위로 띄어쓰기
@@ -413,7 +434,7 @@ OCR결과 시트의 텍스트를 반드시 참고하여 상품의 실제 특성(
 3. **색상 제외**: 색상은 옵션이므로 키워드에서 제외
 4. **카테고리명 금지**: `생활철물`, `운동용품`, `주방용품` 같은 카테고리명을 상품명에 넣지 마세요
 5. **속성/용도 중심**: 카테고리 대신 구체적 속성(소재, 규격, 기능)과 용도(차량용, 사무실, 캠핑)로 채우세요
-6. **80~100자 채우기**: 짧으면 검색 노출 손해. 용도/사용처를 더 넣어서 채우세요
+6. **{a_name_min}~{a_name_max}자 채우기**: 짧으면 검색 노출 손해. 용도/사용처를 더 넣어서 채우세요
 
 ### ❌ 반드시 제외할 노이즈
 아래 항목은 OCR 텍스트에 포함되어 있더라도 **절대 키워드에 사용하지 마세요**:
@@ -426,12 +447,12 @@ OCR결과 시트의 텍스트를 반드시 참고하여 상품의 실제 특성(
 - **다른 상품의 키워드를 섞지 마세요** — 각 행은 독립된 상품입니다
 
 ### 3단계: 검색어설정 (Cafe24 태그)
-- **띄어쓰기 없이 붙여쓰기**, 쉼표로 구분, **반드시 20개** 채우세요
+- **띄어쓰기 없이 붙여쓰기**, 쉼표로 구분, **반드시 {a_tag_count}개** 채우세요
 - 각 검색어는 2~4음절 단어 조합을 붙여쓰기 (예: `구리스호스`, `고압연장`, `그리스건`)
 - 상품명에서 다 넣지 못한 **용도/상황/별칭/동의어**를 여기에 배치
 - ❌ 띄어쓰기 금지 — `구리스 호스`가 아니라 `구리스호스`
 - ❌ 상품명과 완전히 동일한 조합을 반복하지 마세요
-- ✅ 다양한 조합으로 20개를 채우세요
+- ✅ 다양한 조합으로 {a_tag_count}개를 채우세요
 - 예시: `구리스호스,그리스호스,고압호스,스프링호스,구리스건,그리스건,윤활호스,커플러연결,호스연장,협소공간,차량정비,중장비윤활,오일주입,노즐교체,정비공구,산업용호스,연결호스,고압연장,그리스주입,윤활공구`
 
 ### 4단계: 검색키워드
@@ -451,12 +472,43 @@ OCR결과 시트의 텍스트를 반드시 참고하여 상품의 실제 특성(
   - 예: `chunk_05_20260323.xlsx` → `{llm_result_rel}/chunk_05_20260323_llm.xlsx`
 - ⚠️ 다른 청크 파일의 결과를 덮어쓰지 마세요. 반드시 입력 파일명 기준으로 저장하세요.
 
-## B마켓 시트 (필수)
-결과 엑셀에 **`B마켓`** 시트를 추가하세요. `분리추출후` 시트를 복사한 뒤 아래 규칙으로 상품명/검색어를 변경합니다:
-- **상품명**: 63~98자 (A마켓보다 짧음). 핵심상품명 + 핵심속성 위주로 간결하게.
-- **검색어설정**: 쿠팡 태그 최대 14개 (A마켓 20개보다 적음)
-- **네이버태그**: 최대 7개 (A마켓 10개보다 적음)
-- **버킷 우선순위**: identity → function → usage → material → problem → audience → synonyms
+## B마켓 시트 (필수 — 반드시 생성)
+결과 엑셀에 **`B마켓`** 시트를 **반드시** 추가하세요. `분리추출후` 시트를 복사한 뒤, 아래 "코어 버전" 규칙으로 상품명/검색어설정/검색키워드를 **별도로** 작성합니다.
+⚠️ B마켓 시트가 없으면 작업 미완료로 간주합니다.
+
+### 코어 버전 핵심 원칙
+코어 버전은 **새로 생성이 아니라, A마켓(풀 버전)의 선택/축약**입니다.
+- 풀 버전 토큰의 **부분집합** + 최소한의 표기 정리로 만드세요
+- 근거 없는 새 키워드를 추가하지 마세요 (풀 버전에 없는 단어 금지)
+- 제품 정체성(핵심상품명)을 반드시 유지하세요
+
+### B마켓 상품명 작성 규칙
+- **글자수**: {b_name_min}~{b_name_max}자
+- **구조 (의미 순서 더 엄격)**: [핵심상품명 + 규격] → [목적(1개)] → [특징(1개)] → [사용처(1개)]
+- B마켓은 **압축형**: A마켓에서 2~3개씩 쓴 부분을 **1개씩만** 남겨 짧고 선명하게
+- A마켓에서 사용하지 않은 토큰을 우선 배치 (교차 분산)
+- **옵션**: 있으면 맨 끝에 1개만
+- **예시**:
+  - A마켓: `가구 연결 볼트 35mm 편심 체결 고정 조립 니켈 도금 캠록 801 커넥터 캐비닛 서랍장 붙박이장 조립가구 부속`
+  - B마켓: `가구 연결 볼트 35mm 결합 캠 잠금 옷장 선반 가구부속` (A에서 안 쓴 토큰 위주)
+
+### B마켓 검색어설정 (쿠팡 태그)
+- 최대 **{b_tag_count}개** (A마켓 {a_tag_count}개보다 적음)
+- A마켓 검색어에서 **검색량 높은 핵심 {b_tag_count}개만 선별**
+- 규칙은 A마켓과 동일 (붙여쓰기, 쉼표 구분)
+
+### B마켓 검색키워드 (네이버태그)
+- 최대 **{b_tag_count // 2}개** (A마켓보다 적음)
+- A마켓 검색키워드에서 핵심만 추려서 배치
+
+### B마켓 상품 상세설명 (중요)
+- `분리추출후` 시트의 상품 상세설명에 `<img src='https://gi.esmplus.com/rkghrud/상세1.jpg' />` 같은 **상세태그**가 삽입되어 있을 수 있습니다
+- B마켓 시트에서는 이 상세태그를 **반드시 제거**하세요
+- 상세태그는 보통 `<center>` 바로 뒤 또는 HTML 맨 앞에 위치합니다
+- 원본 상품 이미지 태그(`esmplus.com/...goodsellers/...`)는 그대로 유지하고, 추가 삽입된 상세태그만 제거
+
+### B마켓 기타 컬럼
+- 상품명/검색어설정/검색키워드/상품 상세설명 외의 모든 컬럼은 `분리추출후` 시트와 **동일하게 유지**
 """
 
     with open(md_path, "w", encoding="utf-8") as f:
@@ -2701,16 +2753,16 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
             df_after.at[idx, "검색키워드"] = search_keywords  # 검색 키워드 추가
 
-            # B마켓 상품명 생성 (63~98자)
+            # B마켓 상품명 생성 (설정된 글자수)
             if cfg.enable_b_market:
                 b_final = core.merge_base_name_with_keywords(
-                    base_name, kw_line, max_words, 98,
+                    base_name, kw_line, max_words, cfg.b_name_max,
                     option_tokens=option_tokens, ocr_text=sum_text,
                 )
-                # 98자 초과 시 토큰 단위로 자르기
-                if len(b_final) > 98:
+                # 초과 시 토큰 단위로 자르기
+                if len(b_final) > cfg.b_name_max:
                     _b_toks = b_final.split()
-                    while _b_toks and len(" ".join(_b_toks)) > 98:
+                    while _b_toks and len(" ".join(_b_toks)) > cfg.b_name_max:
                         _b_toks.pop()
                     b_final = " ".join(_b_toks)
                 if idx not in b_market_rows:
@@ -3496,7 +3548,10 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
     # ── ocr_only 모드: keyword_skill.md 생성 ──
     if cfg.phase == "ocr_only":
-        _generate_keyword_skill_md(export_root, upload_path, date_tag, chunk_size=cfg.chunk_size, status_cb=status_cb)
+        _generate_keyword_skill_md(export_root, upload_path, date_tag, chunk_size=cfg.chunk_size, status_cb=status_cb,
+                                   a_name_min=cfg.a_name_min, a_name_max=cfg.a_name_max,
+                                   b_name_min=cfg.b_name_min, b_name_max=cfg.b_name_max,
+                                   a_tag_count=cfg.a_tag_count, b_tag_count=cfg.b_tag_count)
 
     # ── 상세 없는 상품 별도 파일 저장 (원본 형식 유지) ──
 
