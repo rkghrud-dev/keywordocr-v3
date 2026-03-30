@@ -174,6 +174,8 @@ class PipelineConfig:
 
     do_flip_lr: bool = True
 
+    logo_path_b: str = ""        # B마켓 전용 로고 경로 (비어있으면 A마켓 로고 사용)
+
     phase: str = "full"          # "full" | "images" | "analysis"
     export_root_override: str = ""  # phase=analysis 시 Phase1의 export_root 재사용
     chunk_size: int = 10             # ocr_only 모드에서 분할 엑셀 개수 (0이면 미분할)
@@ -1839,6 +1841,8 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
         baseline,
 
+        market: str = "A",
+
     ):
 
         result = generate_market_keyword_packages(
@@ -1855,25 +1859,38 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
             naver_keyword_table=naver_keyword_table,
 
+            market=market,
+
         )
 
-        if result.search_keywords:
+        if market.upper() == "B":
+            # B마켓 결과는 별도 컬럼에 저장
+            if result.search_keywords:
+                df_after.at[row_idx, "B_검색키워드"] = result.search_keywords
+            if result.coupang_tags:
+                b_coupang_line = ",".join(result.coupang_tags)
+                df_after.at[row_idx, "B_검색어설정"] = b_coupang_line
+                df_after.at[row_idx, "B_쿠팡검색태그"] = b_coupang_line
+            if result.naver_tags:
+                df_after.at[row_idx, "B_네이버태그"] = "|".join(result.naver_tags)
+        else:
+            if result.search_keywords:
 
-            df_after.at[row_idx, "검색키워드"] = result.search_keywords
+                df_after.at[row_idx, "검색키워드"] = result.search_keywords
 
-            _status(status_cb, f"검색키워드 생성: {str(product_name)[:20]} → {len(result.search_keywords)}자")
+                _status(status_cb, f"검색키워드 생성: {str(product_name)[:20]} → {len(result.search_keywords)}자")
 
-        if result.coupang_tags:
+            if result.coupang_tags:
 
-            coupang_line = ",".join(result.coupang_tags)
+                coupang_line = ",".join(result.coupang_tags)
 
-            df_after.at[row_idx, "검색어설정"] = coupang_line
+                df_after.at[row_idx, "검색어설정"] = coupang_line
 
-            df_after.at[row_idx, "쿠팡검색태그"] = coupang_line
+                df_after.at[row_idx, "쿠팡검색태그"] = coupang_line
 
-        if result.naver_tags:
+            if result.naver_tags:
 
-            df_after.at[row_idx, "네이버태그"] = "|".join(result.naver_tags)
+                df_after.at[row_idx, "네이버태그"] = "|".join(result.naver_tags)
 
         # B마켓 키워드도 동시 생성
         if cfg.enable_b_market:
@@ -2594,6 +2611,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                             vision_analysis=_vision_analysis,
                             target_count=20,
                             fallback_text=prompt_product_name,
+                            market="A",
                         )
                         if kw_line:
                             kw_tokens = [t for t in re.split(r"\s+", kw_line) if t]
@@ -3161,9 +3179,50 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
                     baseline=baseline,
 
+                    market="A",
+
                 )
 
                 search_keywords = market_pkg.search_keywords or search_keywords
+
+                # B마켓 전용 상품명 생성 (토큰 순서/글자수 다르게)
+                try:
+                    b_kw_line = build_keyword_string(
+                        ocr_text=_sum_text_with_vision,
+                        vision_analysis=_vision_analysis,
+                        target_count=20,
+                        fallback_text=prompt_product_name,
+                        market="B",
+                    )
+                except Exception:
+                    b_kw_line = ""
+
+                b_final_line = core.merge_base_name_with_keywords(
+                    base_name, b_kw_line or kw_line, max_words, max_len,
+                    option_tokens=option_tokens, ocr_text=sum_text,
+                )
+                df_after.at[idx, "B_상품명"] = b_final_line
+
+                # B마켓 키워드도 함께 생성
+                _apply_market_keyword_packages(
+
+                    row_idx=idx,
+
+                    product_name=b_final_line,
+
+                    source_text=_sum_text_with_vision,
+
+                    naver_keyword_table=stage2_source,
+
+                    model_name=gpt_model_lt,
+
+                    anchors=anchors,
+
+                    baseline=baseline,
+
+                    market="B",
+
+                )
 
 
 
@@ -3321,9 +3380,50 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
                     baseline=baseline,
 
+                    market="A",
+
                 )
 
                 search_keywords = market_pkg.search_keywords or search_keywords
+
+                # B마켓 전용 상품명 생성 (토큰 순서/글자수 다르게)
+                try:
+                    b_kw_line = build_keyword_string(
+                        ocr_text=_sum_text_with_vision,
+                        vision_analysis=_vision_analysis,
+                        target_count=20,
+                        fallback_text=prompt_product_name,
+                        market="B",
+                    )
+                except Exception:
+                    b_kw_line = ""
+
+                b_final_line = core.merge_base_name_with_keywords(
+                    base_name, b_kw_line or kw_line, max_words, max_len,
+                    option_tokens=option_tokens, ocr_text=sum_text,
+                )
+                df_after.at[idx, "B_상품명"] = b_final_line
+
+                # B마켓 키워드도 함께 생성
+                _apply_market_keyword_packages(
+
+                    row_idx=idx,
+
+                    product_name=b_final_line,
+
+                    source_text=_sum_text_with_vision,
+
+                    naver_keyword_table=stage2_source,
+
+                    model_name=gpt_model_lt,
+
+                    anchors=anchors,
+
+                    baseline=baseline,
+
+                    market="B",
+
+                )
 
 
 
@@ -3428,6 +3528,21 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
     export_cols = upload_cols + extra_output_cols
 
     df_upload_export = df_upload.loc[:, export_cols].copy() if export_cols else df_upload.copy()
+
+    # ── B마켓 시트용 DataFrame 생성 ──
+    b_extra_cols = [
+        c for c in ["1차키워드", "최종키워드2차", "OCR요약", "B_검색키워드", "B_검색어설정", "B_쿠팡검색태그", "B_네이버태그", "네이버검색광고데이터", "옵션추가금"]
+        if c in df_upload.columns and c not in upload_cols
+    ]
+    b_export_cols = upload_cols + b_extra_cols
+    df_upload_export_b = df_upload.loc[:, [c for c in b_export_cols if c in df_upload.columns]].copy()
+    # B_ 접두어 제거하여 A시트와 동일한 컬럼명 사용
+    df_upload_export_b = df_upload_export_b.rename(columns={
+        "B_검색키워드": "검색키워드",
+        "B_검색어설정": "검색어설정",
+        "B_쿠팡검색태그": "쿠팡검색태그",
+        "B_네이버태그": "네이버태그",
+    })
 
 
 
