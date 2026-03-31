@@ -286,6 +286,12 @@ def _extract_gs9(code: str | None) -> str:
     return match.group(0).upper() if match else ""
 
 
+def _sanitize_seller_tag(tag: str) -> str:
+    cleaned = re.sub(r"[^0-9A-Za-z가-힣\s]", "", str(tag))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
 def _resolve_export_root(source_file_path: str) -> str:
     from pathlib import Path
 
@@ -504,7 +510,7 @@ def build_naver_product(row: dict, category_id: str | None = None) -> dict:
     tag_list: list[str] = []
     seen_tags: set[str] = set()
     for raw_tag in raw_tags:
-        tag = raw_tag.strip()
+        tag = _sanitize_seller_tag(raw_tag)
         if not tag or tag in seen_tags:
             continue
         seen_tags.add(tag)

@@ -394,7 +394,7 @@ def build_coupang_product(row: dict, category_code: int, category_meta: dict) ->
     search_tags = row.get("쿠팡검색태그") or row.get("검색어설정") or ""
     tag_list = [t.strip() for t in search_tags.replace(",", " ").split() if t.strip()][:10]
 
-    mgmt_name = str(row.get("상품명(관리용)") or display_name).strip()[:100]
+    mgmt_name = display_name
     detail_html = row.get("상품 상세설명") or row.get("상세설명") or ""
     ext_sku = row.get("자체 상품코드") or ""
 
