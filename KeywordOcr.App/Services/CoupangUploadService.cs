@@ -208,58 +208,51 @@ public sealed class CoupangUploadService
             row["_category_meta"] = categoryCache[catCode];
         }
 
-        // ── 1.5단계: Cafe24 B마켓에서 가공이미지 URL 가져오기 ──
+        // ── 1.5단계: listing_images 가공이미지 → 네이버 CDN 업로드 ──
 
-        Log("Cafe24 기본마켓 이미지 URL 조회 중...");
+        Log("가공이미지 업로드 중 (네이버 CDN)...");
         try
         {
-            var cafe24Client = new Cafe24ApiClient();
-            var configStore = new Cafe24ConfigStore("", "");
-            var tokenState = configStore.LoadTokenState();
+            using var naverApi = NaverCommerceApiClient.FromKeyFile();
 
-            var cafe24Products = await cafe24Client.GetProductsAsync(tokenState.Config, true, ct);
-            Log($"Cafe24 기본마켓 상품 {cafe24Products.Count}개 로드");
-
-            // GS코드 → productNo 매핑 (custom_product_code에 GS코드 저장됨)
-            var gsToCafe24 = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach (var p in cafe24Products)
-            {
-                if (!string.IsNullOrEmpty(p.CustomProductCode))
-                {
-                    // GS코드 정규화: GS3500169A → GS3500169
-                    var gsKey = Regex.Replace(p.CustomProductCode.Trim(), @"[A-Z]$", "", RegexOptions.IgnoreCase);
-                    gsToCafe24.TryAdd(gsKey, p.ProductNo);
-                }
-            }
-
-            // 각 행에 Cafe24 이미지 URL 주입
             foreach (var row in targetRows)
             {
                 var sku = GetStr(row, "자체 상품코드");
                 if (string.IsNullOrEmpty(sku)) continue;
-                var gsKey = Regex.Replace(sku.Trim(), @"[A-Z]$", "", RegexOptions.IgnoreCase);
 
-                if (!gsToCafe24.TryGetValue(gsKey, out var productNo)) continue;
+                // listing_images 폴더에서 가공이미지 찾기
+                var sourceFile = GetStr(row, "_source_file_path");
+                var exportRoot = GetStr(row, "_export_root");
+                if (string.IsNullOrEmpty(exportRoot)) continue;
 
-                try
+                var imageFiles = FindListingImages(exportRoot, sku);
+                if (imageFiles.Count == 0)
                 {
-                    var (detailImg, additionalImgs) = await cafe24Client.GetProductImageUrlsAsync(
-                        tokenState.Config, productNo, ct);
-
-                    if (!string.IsNullOrEmpty(detailImg))
-                    {
-                        var allImgUrls = new List<string> { detailImg };
-                        allImgUrls.AddRange(additionalImgs);
-                        row["_cafe24_image_urls"] = allImgUrls;
-                        Log($"  {sku}: Cafe24 이미지 {allImgUrls.Count}장 확보");
-                    }
+                    Log($"  {sku}: listing_images 없음 (엑셀 URL fallback)");
+                    continue;
                 }
-                catch { /* 개별 실패는 무시, esmplus URL fallback */ }
+
+                var uploadedUrls = new List<string>();
+                foreach (var imgPath in imageFiles.Take(10))
+                {
+                    try
+                    {
+                        var cdnUrl = await naverApi.UploadImageAsync(imgPath, ct);
+                        uploadedUrls.Add(cdnUrl);
+                    }
+                    catch { /* 개별 실패 무시 */ }
+                }
+
+                if (uploadedUrls.Count > 0)
+                {
+                    row["_cafe24_image_urls"] = uploadedUrls;
+                    Log($"  {sku}: 가공이미지 {uploadedUrls.Count}장 업로드 완료");
+                }
             }
         }
         catch (Exception ex)
         {
-            Log($"Cafe24 이미지 조회 실패 (엑셀 URL fallback): {ex.Message}");
+            Log($"가공이미지 업로드 실패 (엑셀 URL fallback): {ex.Message}");
         }
 
         // ── 2단계: JSON 생성 ─────────────────────
@@ -388,4 +381,83 @@ public sealed class CoupangUploadService
 
     private static string GetStr(Dictionary<string, object?> row, string key)
         => row.TryGetValue(key, out var v) && v is not null ? v.ToString()?.Trim() ?? "" : "";
+
+    /// <summary>listing_images 폴더에서 GS코드 가공이미지 파일 찾기 (이미지 선택 반영)</summary>
+    private static List<string> FindListingImages(string exportRoot, string gsCode)
+    {
+        // GS코드 정규화: GS3500169A → GS3500169
+        var gsBase = Regex.Replace(gsCode.Trim(), @"[A-Z]$", "", RegexOptions.IgnoreCase);
+
+        // image_selections.json 로드
+        ImageSelection? selection = null;
+        var selectionsPath = System.IO.Path.Combine(exportRoot, "image_selections.json");
+        if (System.IO.File.Exists(selectionsPath))
+        {
+            try
+            {
+                var json = System.IO.File.ReadAllText(selectionsPath);
+                using var doc = JsonDocument.Parse(json);
+                // GS9 키로 검색 (GS3500169)
+                var gs9 = gsBase.Length >= 9 ? gsBase[..9] : gsBase;
+                if (doc.RootElement.TryGetProperty(gs9, out var sel))
+                {
+                    int? mainIdx = sel.TryGetProperty("main", out var m) && m.ValueKind == JsonValueKind.Number ? m.GetInt32() : null;
+                    int? mainIdxB = sel.TryGetProperty("mainB", out var mb) && mb.ValueKind == JsonValueKind.Number ? mb.GetInt32() : null;
+                    var addIndices = new List<int>();
+                    if (sel.TryGetProperty("additional", out var addArr) && addArr.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var a in addArr.EnumerateArray())
+                            if (a.ValueKind == JsonValueKind.Number) addIndices.Add(a.GetInt32());
+                    }
+                    selection = new ImageSelection(mainIdx, addIndices, mainIdxB);
+                }
+            }
+            catch { }
+        }
+
+        // listing_images 폴더 탐색
+        var listingRoot = System.IO.Path.Combine(exportRoot, "listing_images");
+        if (!System.IO.Directory.Exists(listingRoot))
+            return new List<string>();
+
+        var searchDirs = new List<string> { listingRoot };
+        try
+        {
+            foreach (var sub in System.IO.Directory.GetDirectories(listingRoot))
+                searchDirs.Add(sub);
+        }
+        catch { }
+
+        foreach (var dir in searchDirs)
+        {
+            var gsFolder = System.IO.Path.Combine(dir, gsBase);
+            if (!System.IO.Directory.Exists(gsFolder))
+                gsFolder = System.IO.Path.Combine(dir, gsCode);
+            if (!System.IO.Directory.Exists(gsFolder)) continue;
+
+            var allFiles = System.IO.Directory.GetFiles(gsFolder)
+                .Where(f => Regex.IsMatch(f, @"\.(jpg|jpeg|png|bmp|webp)$", RegexOptions.IgnoreCase))
+                .OrderBy(f => f)
+                .ToList();
+
+            if (allFiles.Count == 0) continue;
+
+            // 이미지 선택이 있으면 선택된 순서대로 (대표 → 추가)
+            if (selection?.MainIndex is not null)
+            {
+                var (mainPath, addPaths) = Cafe24UploadSupport.PickImagesBySelection(gsFolder, selection);
+                if (mainPath is not null)
+                {
+                    var result = new List<string> { mainPath };
+                    result.AddRange(addPaths);
+                    return result;
+                }
+            }
+
+            // 선택 없으면 전체 파일 순서대로
+            return allFiles;
+        }
+
+        return new List<string>();
+    }
 }

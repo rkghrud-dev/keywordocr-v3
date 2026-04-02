@@ -137,8 +137,14 @@ public sealed class NaverUploadService
             // 실제 등록
             try
             {
-                // 이미지 업로드
-                var imageUrls = CollectImageUrls(row);
+                // 이미지: listing_images 가공이미지 우선, 없으면 엑셀 URL fallback
+                var exportRoot = GetStr(row, "_export_root");
+                var sku = GetStr(row, "자체 상품코드");
+                var listingImages = !string.IsNullOrEmpty(exportRoot) && !string.IsNullOrEmpty(sku)
+                    ? FindListingImages(exportRoot, sku)
+                    : new List<string>();
+
+                var imageUrls = listingImages.Count > 0 ? listingImages : CollectImageUrls(row);
                 JsonObject? imagesNode = null;
 
                 if (imageUrls.Count > 0)
@@ -529,9 +535,99 @@ public sealed class NaverUploadService
             }
             row["_row_num"] = r;
             row["_source_file_path"] = filePath;
+            row["_export_root"] = ResolveExportRoot(filePath);
             rows.Add(row);
         }
         return rows;
+    }
+
+    private static string ResolveExportRoot(string sourceFilePath)
+    {
+        var path = System.IO.Path.GetFullPath(sourceFilePath);
+        var parent = System.IO.Path.GetDirectoryName(path) ?? "";
+        var parentName = System.IO.Path.GetFileName(parent).ToLower();
+        var grandParent = System.IO.Path.GetDirectoryName(parent) ?? "";
+        var grandName = System.IO.Path.GetFileName(grandParent).ToLower();
+
+        if (parentName == "llm_result" && grandName == "llm_chunks")
+            return System.IO.Path.GetDirectoryName(grandParent) ?? grandParent;
+        if (parentName == "llm_result")
+            return grandParent;
+        return parent;
+    }
+
+    /// <summary>listing_images 폴더에서 GS코드 가공이미지 파일 찾기 (이미지 선택 반영)</summary>
+    private static List<string> FindListingImages(string exportRoot, string gsCode)
+    {
+        var gsBase = Regex.Replace(gsCode.Trim(), @"[A-Z]$", "", RegexOptions.IgnoreCase);
+
+        // image_selections.json 로드
+        ImageSelection? selection = null;
+        var selectionsPath = System.IO.Path.Combine(exportRoot, "image_selections.json");
+        if (System.IO.File.Exists(selectionsPath))
+        {
+            try
+            {
+                var json = System.IO.File.ReadAllText(selectionsPath);
+                using var doc = JsonDocument.Parse(json);
+                var gs9 = gsBase.Length >= 9 ? gsBase[..9] : gsBase;
+                if (doc.RootElement.TryGetProperty(gs9, out var sel))
+                {
+                    int? mainIdx = sel.TryGetProperty("main", out var m) && m.ValueKind == JsonValueKind.Number ? m.GetInt32() : null;
+                    int? mainIdxB = sel.TryGetProperty("mainB", out var mb) && mb.ValueKind == JsonValueKind.Number ? mb.GetInt32() : null;
+                    var addIndices = new List<int>();
+                    if (sel.TryGetProperty("additional", out var addArr) && addArr.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var a in addArr.EnumerateArray())
+                            if (a.ValueKind == JsonValueKind.Number) addIndices.Add(a.GetInt32());
+                    }
+                    selection = new ImageSelection(mainIdx, addIndices, mainIdxB);
+                }
+            }
+            catch { }
+        }
+
+        var listingRoot = System.IO.Path.Combine(exportRoot, "listing_images");
+        if (!System.IO.Directory.Exists(listingRoot))
+            return new List<string>();
+
+        var searchDirs = new List<string> { listingRoot };
+        try
+        {
+            foreach (var sub in System.IO.Directory.GetDirectories(listingRoot))
+                searchDirs.Add(sub);
+        }
+        catch { }
+
+        foreach (var dir in searchDirs)
+        {
+            var gsFolder = System.IO.Path.Combine(dir, gsBase);
+            if (!System.IO.Directory.Exists(gsFolder))
+                gsFolder = System.IO.Path.Combine(dir, gsCode);
+            if (!System.IO.Directory.Exists(gsFolder)) continue;
+
+            var allFiles = System.IO.Directory.GetFiles(gsFolder)
+                .Where(f => Regex.IsMatch(f, @"\.(jpg|jpeg|png|bmp|webp)$", RegexOptions.IgnoreCase))
+                .OrderBy(f => f)
+                .ToList();
+
+            if (allFiles.Count == 0) continue;
+
+            if (selection?.MainIndex is not null)
+            {
+                var (mainPath, addPaths) = Cafe24UploadSupport.PickImagesBySelection(gsFolder, selection);
+                if (mainPath is not null)
+                {
+                    var result = new List<string> { mainPath };
+                    result.AddRange(addPaths);
+                    return result;
+                }
+            }
+
+            return allFiles;
+        }
+
+        return new List<string>();
     }
 
     private static string GetStr(Dictionary<string, object?> row, string key)

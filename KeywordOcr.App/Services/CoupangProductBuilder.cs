@@ -99,15 +99,27 @@ public static class CoupangProductBuilder
         var detailHtml = GetStr(row, "상품 상세설명").OrIfEmpty(GetStr(row, "상세설명"));
         var detailImageUrls = BuildDetailImageUrls(row);
 
-        // Cafe24 B마켓에서 가져온 가공이미지 URL 우선 사용
+        // Cafe24 기본마켓 가공이미지 URL 우선 + 부족하면 상세HTML 이미지로 보충
         List<string> listingImageUrls;
         if (row.TryGetValue("_cafe24_image_urls", out var cafe24Imgs) && cafe24Imgs is List<string> cafe24List && cafe24List.Count > 0)
         {
-            listingImageUrls = cafe24List;
+            listingImageUrls = new List<string>(cafe24List);
         }
         else
         {
-            listingImageUrls = BuildImageUrls(row, detailHtml);
+            listingImageUrls = BuildImageUrls(row);
+        }
+
+        // 대표이미지만 있고 추가이미지가 없으면 상세HTML 이미지로 보충
+        if (listingImageUrls.Count <= 1 && detailImageUrls.Count > 0)
+        {
+            var seen = new HashSet<string>(listingImageUrls, StringComparer.OrdinalIgnoreCase);
+            foreach (var imgUrl in detailImageUrls)
+            {
+                if (seen.Add(imgUrl))
+                    listingImageUrls.Add(imgUrl);
+                if (listingImageUrls.Count >= 10) break;
+            }
         }
 
         var images = new JsonArray();
@@ -285,7 +297,7 @@ public static class CoupangProductBuilder
     }
 
     /// <summary>목록용 이미지만 추출 (대표이미지 + 추가이미지)</summary>
-    private static List<string> BuildImageUrls(Dictionary<string, object?> row, string _unused = "")
+    private static List<string> BuildImageUrls(Dictionary<string, object?> row)
     {
         var urls = new List<string>();
         var seen = new HashSet<string>();
