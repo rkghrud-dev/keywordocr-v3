@@ -1963,6 +1963,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
         ocr_text: str = "",
         b_kw_line: str = "",
         prefer_seed_only: bool = False,
+        a_final_name: str = "",
     ) -> str:
 
         def _split_title_tokens(text: str) -> list[str]:
@@ -1980,20 +1981,19 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
             front = [t for t in tokens if t not in a_head]
             back = [t for t in tokens if t in a_head]
             if not front:
-                # 모두 겹치면 최소 1개는 뒤에서 앞으로 가져오기
-                if len(back) > 2:
-                    front = back[2:]
-                    back = back[:2]
-                else:
-                    return tokens
+                # 모두 겹치면 뒤쪽 절반을 앞으로
+                mid = max(1, len(back) // 2)
+                front = back[mid:]
+                back = back[:mid]
             return front + back
 
         desired_min = min(int(cfg.b_name_max), max(int(cfg.b_name_min), min(78, int(cfg.b_name_max))))
         b_seed = core.normalize_space(str(b_kw_line or "")).strip()
         a_seed = core.normalize_space(str(kw_line or "")).strip()
 
-        # A마켓 상품명 앞 3개 토큰 추출 (B마켓 시작과 겹치지 않도록)
-        a_head_tokens = set(_split_title_tokens(a_seed)[:3])
+        # A마켓 최종 상품명 기준으로 앞 3개 토큰 추출 (더 정확한 비교)
+        a_ref = a_final_name or a_seed
+        a_head_tokens = set(_split_title_tokens(a_ref)[:3])
 
         if prefer_seed_only and not _has_meaningful_title_evidence(ocr_text):
             concise_tokens = [tok for tok in _split_title_tokens(b_seed or a_seed or base_name) if tok not in option_tokens]
@@ -2935,6 +2935,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                     ocr_text=sum_text,
                     b_kw_line=b_kw_seed,
                     prefer_seed_only=_sparse_title_mode,
+                    a_final_name=final_line,
                 )
                 df_after.at[idx, "B_상품명"] = b_final
                 if idx not in b_market_rows:
@@ -3359,6 +3360,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                     ocr_text=sum_text,
                     b_kw_line=b_kw_line,
                     prefer_seed_only=_sparse_title_mode,
+                    a_final_name=final_line,
                 )
                 df_after.at[idx, "B_상품명"] = b_final_line
                 if cfg.enable_b_market:
@@ -3570,6 +3572,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                     ocr_text=sum_text,
                     b_kw_line=b_kw_line,
                     prefer_seed_only=_sparse_title_mode,
+                    a_final_name=final_line,
                 )
                 df_after.at[idx, "B_상품명"] = b_final_line
                 if cfg.enable_b_market:
