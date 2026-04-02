@@ -4,6 +4,7 @@ import traceback
 from PySide6 import QtCore
 
 from app.services.pipeline import run_pipeline, PipelineConfig, run_listing_only, ListingOnlyConfig
+from app.services.coupang import run_coupang_upload, CoupangUploadConfig, CoupangUploadResult
 
 
 class PipelineWorker(QtCore.QObject):
@@ -51,5 +52,29 @@ class ListingWorker(QtCore.QObject):
                 progress_cb=self.progress.emit,
             )
             self.finished_listing.emit(out_root)
+        except Exception:
+            self.error.emit(traceback.format_exc())
+
+
+class CoupangUploadWorker(QtCore.QObject):
+    """쿠팡 업로드 워커 (QThread에서 실행)."""
+    status = QtCore.Signal(str)
+    progress = QtCore.Signal(int)
+    finished = QtCore.Signal(list)   # list[CoupangUploadResult]
+    error = QtCore.Signal(str)
+
+    def __init__(self, config: CoupangUploadConfig) -> None:
+        super().__init__()
+        self._config = config
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        try:
+            results = run_coupang_upload(
+                self._config,
+                status_cb=self.status.emit,
+                progress_cb=self.progress.emit,
+            )
+            self.finished.emit(results)
         except Exception:
             self.error.emit(traceback.format_exc())

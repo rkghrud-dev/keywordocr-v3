@@ -506,6 +506,59 @@ internal sealed class Cafe24ApiClient
         };
     }
 
+    /// <summary>상품의 대표이미지 + 추가이미지 URL 조회</summary>
+    public async Task<(string? DetailImage, List<string> AdditionalImages)> GetProductImageUrlsAsync(
+        Cafe24TokenConfig config, int productNo, CancellationToken cancellationToken)
+    {
+        // 1) 상품 기본 정보에서 대표이미지
+        string? detailImage = null;
+        var url = $"https://{config.MallId}.cafe24api.com/api/v2/admin/products/{productNo}?shop_no={Uri.EscapeDataString(config.ShopNo)}";
+        using (var request = CreateRequest(HttpMethod.Get, url, config))
+        using (var document = await SendJsonAsync(request, cancellationToken))
+        {
+            if (document.RootElement.TryGetProperty("product", out var product))
+            {
+                if (product.TryGetProperty("detail_image", out var di) && di.ValueKind == JsonValueKind.String)
+                    detailImage = di.GetString();
+            }
+        }
+
+        // 2) 추가이미지 별도 엔드포인트로 조회
+        var additionalImages = new List<string>();
+        var addUrl = $"https://{config.MallId}.cafe24api.com/api/v2/admin/products/{productNo}/additionalimages?shop_no={Uri.EscapeDataString(config.ShopNo)}";
+        try
+        {
+            using var addReq = CreateRequest(HttpMethod.Get, addUrl, config);
+            using var addDoc = await SendJsonAsync(addReq, cancellationToken);
+
+            if (addDoc.RootElement.TryGetProperty("additionalimages", out var addImgs) && addImgs.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var img in addImgs.EnumerateArray())
+                {
+                    // 객체인 경우 big URL 우선, 아니면 문자열 그대로
+                    string? imgUrl = null;
+                    if (img.ValueKind == JsonValueKind.Object)
+                    {
+                        if (img.TryGetProperty("big", out var big) && big.ValueKind == JsonValueKind.String)
+                            imgUrl = big.GetString();
+                        else if (img.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String)
+                            imgUrl = u.GetString();
+                    }
+                    else if (img.ValueKind == JsonValueKind.String)
+                    {
+                        imgUrl = img.GetString();
+                    }
+
+                    if (!string.IsNullOrEmpty(imgUrl))
+                        additionalImages.Add(imgUrl!);
+                }
+            }
+        }
+        catch { /* 추가이미지 조회 실패는 무시 */ }
+
+        return (detailImage, additionalImages);
+    }
+
     private static int GetInt(JsonElement element, string propertyName)
     {
         if (!element.TryGetProperty(propertyName, out var value))

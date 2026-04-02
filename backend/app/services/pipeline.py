@@ -511,6 +511,29 @@ OCR결과 시트의 텍스트를 반드시 참고하여 상품의 실제 특성(
 
 ### B마켓 기타 컬럼
 - 상품명/검색어설정/검색키워드/상품 상세설명 외의 모든 컬럼은 `분리추출후` 시트와 **동일하게 유지**
+
+## 5단계: 마켓별 카테고리 매칭 (필수)
+같은 폴더에 있는 카테고리 트리 파일을 참조하여, 각 상품에 가장 적합한 카테고리를 선택하세요.
+
+### 네이버 카테고리 (`naver_category_tree.txt`)
+- 파일 형식: `카테고리ID\\t전체경로` (예: `50001032\\t생활/건강>공구>전기용품`)
+- **`분리추출후` 시트**와 **`B마켓` 시트** 모두에 `네이버카테고리코드` 열을 추가하세요
+- 값: 카테고리 ID (숫자만, 예: `50001032`)
+- OCR 텍스트 + 상품명을 종합하여 **가장 구체적인 leaf 카테고리**를 선택하세요
+- 예: `스위치 고정핀` → 전기용품 → `50001032`
+- 예: `밑창 테이프` → 신발용품>보호쿠션/패드 → `50000669`
+- ❌ 상위 카테고리가 아닌 **가장 하위(leaf) 카테고리**를 선택하세요
+
+### 쿠팡 카테고리 (`coupang_category_tree.txt`)
+- 파일이 있는 경우에만 처리
+- 형식: 네이버와 동일 (`카테고리ID\\t전체경로`)
+- `쿠팡카테고리코드` 열을 추가하세요
+
+### 카테고리 매칭 원칙
+1. **상품의 실제 용도/기능**을 기준으로 선택 (이름만 보지 말고 OCR 텍스트도 참고)
+2. **가장 구체적인 하위 카테고리** 선택 (예: `공구` 보다 `전기용품`)
+3. 애매할 때는 **가장 많이 팔릴 것 같은 카테고리** 선택
+4. A마켓과 B마켓은 **같은 카테고리코드** 사용
 """
 
     with open(md_path, "w", encoding="utf-8") as f:
@@ -519,17 +542,29 @@ OCR결과 시트의 텍스트를 반드시 참고하여 상품의 실제 특성(
     _status(status_cb, f"keyword_skill.md 생성: {md_path}")
     _status(status_cb, f"LLM 결과 저장 폴더: {llm_result_dir}")
 
+    # 카테고리 트리 파일 복사 (네이버/쿠팡)
+    import shutil
+    _services_dir = os.path.dirname(os.path.abspath(__file__))
+    for cat_file in ("naver_category_tree.txt", "coupang_category_tree.txt"):
+        src = os.path.join(_services_dir, cat_file)
+        if os.path.isfile(src):
+            dst = os.path.join(export_root, cat_file)
+            shutil.copy2(src, dst)
+            _status(status_cb, f"{cat_file} → export 폴더 복사")
+
     # 분할 엑셀 생성 + skill.md 복사
     if chunk_size and chunk_size > 0:
         _split_upload_excel(upload_path, export_root, chunk_size, date_tag, status_cb)
-        # llm_chunks 폴더에도 keyword_skill.md 복사 (Codex가 참조할 수 있도록)
-        import shutil
-        chunks_skill = os.path.join(export_root, "llm_chunks", "keyword_skill.md")
-        if os.path.isdir(os.path.join(export_root, "llm_chunks")):
-            shutil.copy2(md_path, chunks_skill)
-            # llm_result 폴더도 llm_chunks 안에 생성
-            os.makedirs(os.path.join(export_root, "llm_chunks", "llm_result"), exist_ok=True)
-            _status(status_cb, f"keyword_skill.md → llm_chunks/ 복사 완료")
+        # llm_chunks 폴더에도 keyword_skill.md + 카테고리 트리 복사
+        chunks_dir = os.path.join(export_root, "llm_chunks")
+        if os.path.isdir(chunks_dir):
+            shutil.copy2(md_path, os.path.join(chunks_dir, "keyword_skill.md"))
+            for cat_file in ("naver_category_tree.txt", "coupang_category_tree.txt"):
+                src = os.path.join(_services_dir, cat_file)
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(chunks_dir, cat_file))
+            os.makedirs(os.path.join(chunks_dir, "llm_result"), exist_ok=True)
+            _status(status_cb, f"keyword_skill.md + 카테고리 트리 → llm_chunks/ 복사 완료")
 
 
 def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple[str, str]:
@@ -1842,6 +1877,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
         baseline,
 
         market: str = "A",
+        avoid_terms: str = "",
 
     ):
 
@@ -1860,6 +1896,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
             naver_keyword_table=naver_keyword_table,
 
             market=market,
+            avoid_terms=avoid_terms,
 
         )
 
@@ -1893,7 +1930,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                 df_after.at[row_idx, "네이버태그"] = "|".join(result.naver_tags)
 
         # B마켓 키워드도 동시 생성
-        if cfg.enable_b_market:
+        if cfg.enable_b_market and market.upper() != "B":
             b_result = generate_market_keyword_packages(
                 product_name=product_name,
                 source_text=source_text,
@@ -1902,6 +1939,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                 baseline=baseline,
                 naver_keyword_table=naver_keyword_table,
                 market="B",
+                avoid_terms=avoid_terms,
             )
             b_data = {}
             if b_result.coupang_tags:
@@ -1913,6 +1951,110 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
             b_market_rows[row_idx] = b_data
 
         return result
+    def _has_meaningful_title_evidence(text: str) -> bool:
+        cleaned = core.normalize_space(str(text or "")).replace("(OCR 텍스트 없음)", "").strip()
+        return bool(cleaned)
+
+
+    def _compose_b_market_title(
+        base_name: str,
+        kw_line: str,
+        option_tokens: set,
+        ocr_text: str = "",
+        b_kw_line: str = "",
+        prefer_seed_only: bool = False,
+    ) -> str:
+
+        def _split_title_tokens(text: str) -> list[str]:
+            return [tok for tok in core.normalize_space(str(text or "")).split() if tok]
+
+        def _compact_seed_line(text: str) -> str:
+            tokens = [tok for tok in _split_title_tokens(text) if tok not in option_tokens]
+            line = " ".join(tokens).strip()
+            return line[: int(cfg.b_name_max)].rstrip() if len(line) > int(cfg.b_name_max) else line
+
+        def _reorder_away_from_a(tokens: list[str], a_head: set[str]) -> list[str]:
+            """A마켓 앞부분과 겹치는 토큰을 뒤로 밀어 B마켓 시작을 차별화"""
+            if not a_head or len(tokens) < 3:
+                return tokens
+            front = [t for t in tokens if t not in a_head]
+            back = [t for t in tokens if t in a_head]
+            if not front:
+                # 모두 겹치면 최소 1개는 뒤에서 앞으로 가져오기
+                if len(back) > 2:
+                    front = back[2:]
+                    back = back[:2]
+                else:
+                    return tokens
+            return front + back
+
+        desired_min = min(int(cfg.b_name_max), max(int(cfg.b_name_min), min(78, int(cfg.b_name_max))))
+        b_seed = core.normalize_space(str(b_kw_line or "")).strip()
+        a_seed = core.normalize_space(str(kw_line or "")).strip()
+
+        # A마켓 상품명 앞 3개 토큰 추출 (B마켓 시작과 겹치지 않도록)
+        a_head_tokens = set(_split_title_tokens(a_seed)[:3])
+
+        if prefer_seed_only and not _has_meaningful_title_evidence(ocr_text):
+            concise_tokens = [tok for tok in _split_title_tokens(b_seed or a_seed or base_name) if tok not in option_tokens]
+            concise_tokens = _reorder_away_from_a(concise_tokens, a_head_tokens)
+            concise = " ".join(concise_tokens).strip()
+            if concise:
+                return concise[: int(cfg.b_name_max)].rstrip() if len(concise) > int(cfg.b_name_max) else concise
+
+        b_tokens = _split_title_tokens(b_seed)
+        strong_b_seed = len(b_tokens) >= 4 or len(b_seed) >= max(18, desired_min - 22)
+
+        seed_tokens: list[str] = []
+        seed_seen: set[str] = set()
+        for source in ([b_seed] if strong_b_seed else [b_seed, a_seed]):
+            for tok in _split_title_tokens(source):
+                if tok in option_tokens or tok in seed_seen:
+                    continue
+                seed_seen.add(tok)
+                seed_tokens.append(tok)
+        if not seed_tokens:
+            for tok in _split_title_tokens(base_name):
+                if tok in option_tokens or tok in seed_seen:
+                    continue
+                seed_seen.add(tok)
+                seed_tokens.append(tok)
+
+        # A마켓 앞부분과 겹치는 토큰을 뒤로 재배치
+        seed_tokens = _reorder_away_from_a(seed_tokens, a_head_tokens)
+
+        seed_line = " ".join(seed_tokens).strip()
+        out = core.merge_base_name_with_keywords(
+            seed_line,  # base_name 대신 재배치된 seed_line을 base로 전달
+            seed_line,
+            max_words,
+            int(cfg.b_name_max),
+            option_tokens=option_tokens,
+            ocr_text=ocr_text,
+        )
+
+        out_tokens = _split_title_tokens(out)
+        # 최종 결과도 A마켓과 시작이 겹치면 재배치
+        out_tokens = _reorder_away_from_a(out_tokens, a_head_tokens)
+        seen = set(out_tokens)
+        fill_sources = [b_seed, a_seed, ocr_text, base_name]
+        for source in fill_sources:
+            for tok in _split_title_tokens(source):
+                if tok in option_tokens or tok in seen:
+                    continue
+                candidate_tokens = out_tokens + [tok]
+                candidate = " ".join(candidate_tokens).strip()
+                if len(candidate) > int(cfg.b_name_max):
+                    continue
+                out_tokens = candidate_tokens
+                seen.add(tok)
+                if len(candidate) >= desired_min:
+                    return candidate
+
+        final_out = " ".join(out_tokens).strip()
+        return final_out[: int(cfg.b_name_max)].rstrip() if len(final_out) > int(cfg.b_name_max) else final_out
+
+
 
 
 
@@ -2604,20 +2746,19 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
             # GPT 실패 시 keyword_builder → heuristic fallback
             if not kw_line or len(kw_line) < 90:
-                if _vision_analysis:
-                    try:
-                        kw_line = build_keyword_string(
-                            ocr_text=_sum_text_with_vision,
-                            vision_analysis=_vision_analysis,
-                            target_count=20,
-                            fallback_text=prompt_product_name,
-                            market="A",
-                        )
-                        if kw_line:
-                            kw_tokens = [t for t in re.split(r"\s+", kw_line) if t]
-                    except Exception:
-                        kw_line = ""
-                        kw_tokens = []
+                try:
+                    kw_line = build_keyword_string(
+                        ocr_text=_sum_text_with_vision,
+                        vision_analysis=_vision_analysis,
+                        target_count=20,
+                        fallback_text=prompt_product_name,
+                        market="A",
+                    )
+                    if kw_line:
+                        kw_tokens = [t for t in re.split(r"\s+", kw_line) if t]
+                except Exception:
+                    kw_line = ""
+                    kw_tokens = []
 
             if not kw_line:
                 kw_line = core._fallback_heuristic(prompt_product_name, _sum_text_with_vision, max_n=max_words)
@@ -2729,7 +2870,11 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
 
 
-            final_line = core.merge_base_name_with_keywords(base_name, kw_line, max_words, max_len, option_tokens=option_tokens, ocr_text=sum_text)
+            _sparse_title_mode = (not _vision_analysis) and (not _has_meaningful_title_evidence(sum_text))
+            if _sparse_title_mode and kw_line:
+                final_line = core.normalize_space(str(kw_line or "")).strip()[:max_len]
+            else:
+                final_line = core.merge_base_name_with_keywords(base_name, kw_line, max_words, max_len, option_tokens=option_tokens, ocr_text=sum_text)
 
 
 
@@ -2772,17 +2917,26 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
             df_after.at[idx, "검색키워드"] = search_keywords  # 검색 키워드 추가
 
             # B마켓 상품명 생성 (설정된 글자수)
-            if cfg.enable_b_market:
-                b_final = core.merge_base_name_with_keywords(
-                    base_name, kw_line, max_words, cfg.b_name_max,
-                    option_tokens=option_tokens, ocr_text=sum_text,
+            if cfg.enable_b_market and market.upper() != "B":
+                try:
+                    b_kw_seed = build_keyword_string(
+                        ocr_text=sum_text,
+                        vision_analysis=_vision_analysis,
+                        target_count=20,
+                        fallback_text=prompt_product_name,
+                        market="B",
+                    )
+                except Exception:
+                    b_kw_seed = ""
+                b_final = _compose_b_market_title(
+                    base_name=base_name,
+                    kw_line=kw_line,
+                    option_tokens=option_tokens,
+                    ocr_text=sum_text,
+                    b_kw_line=b_kw_seed,
+                    prefer_seed_only=_sparse_title_mode,
                 )
-                # 초과 시 토큰 단위로 자르기
-                if len(b_final) > cfg.b_name_max:
-                    _b_toks = b_final.split()
-                    while _b_toks and len(" ".join(_b_toks)) > cfg.b_name_max:
-                        _b_toks.pop()
-                    b_final = " ".join(_b_toks)
+                df_after.at[idx, "B_상품명"] = b_final
                 if idx not in b_market_rows:
                     b_market_rows[idx] = {}
                 b_market_rows[idx]["상품명"] = b_final
@@ -3180,6 +3334,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                     baseline=baseline,
 
                     market="A",
+                    avoid_terms=final_line,
 
                 )
 
@@ -3197,11 +3352,19 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                 except Exception:
                     b_kw_line = ""
 
-                b_final_line = core.merge_base_name_with_keywords(
-                    base_name, b_kw_line or kw_line, max_words, max_len,
-                    option_tokens=option_tokens, ocr_text=sum_text,
+                b_final_line = _compose_b_market_title(
+                    base_name=base_name,
+                    kw_line=kw_line,
+                    option_tokens=option_tokens,
+                    ocr_text=sum_text,
+                    b_kw_line=b_kw_line,
+                    prefer_seed_only=_sparse_title_mode,
                 )
                 df_after.at[idx, "B_상품명"] = b_final_line
+                if cfg.enable_b_market:
+                    if idx not in b_market_rows:
+                        b_market_rows[idx] = {}
+                    b_market_rows[idx]["상품명"] = b_final_line
 
                 # B마켓 키워드도 함께 생성
                 _apply_market_keyword_packages(
@@ -3221,6 +3384,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                     baseline=baseline,
 
                     market="B",
+                    avoid_terms=final_line,
 
                 )
 
@@ -3381,6 +3545,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                     baseline=baseline,
 
                     market="A",
+                    avoid_terms=final_line,
 
                 )
 
@@ -3398,11 +3563,19 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                 except Exception:
                     b_kw_line = ""
 
-                b_final_line = core.merge_base_name_with_keywords(
-                    base_name, b_kw_line or kw_line, max_words, max_len,
-                    option_tokens=option_tokens, ocr_text=sum_text,
+                b_final_line = _compose_b_market_title(
+                    base_name=base_name,
+                    kw_line=kw_line,
+                    option_tokens=option_tokens,
+                    ocr_text=sum_text,
+                    b_kw_line=b_kw_line,
+                    prefer_seed_only=_sparse_title_mode,
                 )
                 df_after.at[idx, "B_상품명"] = b_final_line
+                if cfg.enable_b_market:
+                    if idx not in b_market_rows:
+                        b_market_rows[idx] = {}
+                    b_market_rows[idx]["상품명"] = b_final_line
 
                 # B마켓 키워드도 함께 생성
                 _apply_market_keyword_packages(
@@ -3422,6 +3595,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                     baseline=baseline,
 
                     market="B",
+                    avoid_terms=final_line,
 
                 )
 
@@ -3531,11 +3705,12 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
     # ── B마켓 시트용 DataFrame 생성 ──
     b_extra_cols = [
-        c for c in ["1차키워드", "최종키워드2차", "OCR요약", "B_검색키워드", "B_검색어설정", "B_쿠팡검색태그", "B_네이버태그", "네이버검색광고데이터", "옵션추가금"]
+        c for c in ["B_상품명", "1차키워드", "최종키워드2차", "OCR요약", "B_검색키워드", "B_검색어설정", "B_쿠팡검색태그", "B_네이버태그", "네이버검색광고데이터", "옵션추가금"]
         if c in df_upload.columns and c not in upload_cols
     ]
     b_export_cols = upload_cols + b_extra_cols
     df_upload_export_b = df_upload.loc[:, [c for c in b_export_cols if c in df_upload.columns]].copy()
+    _has_b_name_export = "B_상품명" in df_upload_export_b.columns
     # B_ 접두어 제거하여 A시트와 동일한 컬럼명 사용
     df_upload_export_b = df_upload_export_b.rename(columns={
         "B_검색키워드": "검색키워드",
@@ -3550,11 +3725,20 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
     # B마켓 DataFrame 생성
     df_b_market = None
-    if cfg.enable_b_market and b_market_rows:
-        df_b_market = df_upload_export.copy()
+    if cfg.enable_b_market:
+        if not df_upload_export_b.empty:
+            df_b_market = df_upload_export_b.copy()
+            if "B_상품명" in df_b_market.columns:
+                if name_col in df_b_market.columns:
+                    _b_name_series = df_b_market["B_상품명"].astype("string").fillna("").str.strip()
+                    df_b_market[name_col] = _b_name_series.where(_b_name_series != "", df_b_market[name_col])
+                df_b_market.drop(columns=["B_상품명"], inplace=True, errors="ignore")
+        if b_market_rows:
+            if df_b_market is None:
+                df_b_market = df_upload_export.copy()
         for idx, b_data in b_market_rows.items():
             if idx in df_b_market.index:
-                if "상품명" in b_data and name_col in df_b_market.columns:
+                if "상품명" in b_data and name_col in df_b_market.columns and not _has_b_name_export:
                     df_b_market.at[idx, name_col] = b_data["상품명"]
                 if "검색어설정" in b_data and "검색어설정" in df_b_market.columns:
                     df_b_market.at[idx, "검색어설정"] = b_data["검색어설정"]
@@ -4251,7 +4435,6 @@ def run_listing_only(cfg: ListingOnlyConfig, status_cb=None, progress_cb=None) -
     _progress(progress_cb, 100)
 
     return listing_out_root
-
 
 
 

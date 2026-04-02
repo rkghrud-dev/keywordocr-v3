@@ -508,6 +508,86 @@
             </TabItem>
 
 
+            <!-- ════════════ 쿠팡 업로드 ════════════ -->
+            <TabItem Header="  쿠팡 업로드  " FontSize="13" FontWeight="SemiBold">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16,12">
+                    <StackPanel>
+
+                        <TextBlock Style="{StaticResource SectionLabel}" Text="가공파일 선택"/>
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="CoupangSourcePath" Grid.Column="0" Height="28" FontSize="11"
+                                     VerticalContentAlignment="Center" Padding="6,0"
+                                     AllowDrop="True" PreviewDragOver="CoupangSource_DragOver" Drop="CoupangSource_Drop"/>
+                            <Button Grid.Column="1" Content="찾아보기" Width="80" Height="28" Margin="6,0,0,0"
+                                    FontSize="11" Click="CoupangBrowseSource_Click"/>
+                        </Grid>
+
+                        <TextBlock Style="{StaticResource SectionLabel}" Text="업로드 설정"/>
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="20"/>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="32"/>
+                                <RowDefinition Height="32"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="시작 행"/>
+                            <TextBox x:Name="CoupangRowStart" Grid.Row="0" Grid.Column="1" Height="26" FontSize="11"
+                                     VerticalContentAlignment="Center" Text="0" TextAlignment="Center"
+                                     ToolTip="0이면 전체 행 처리"/>
+                            <TextBlock Grid.Row="0" Grid.Column="3" Style="{StaticResource FieldLabel}" Text="끝 행"/>
+                            <TextBox x:Name="CoupangRowEnd" Grid.Row="0" Grid.Column="4" Height="26" FontSize="11"
+                                     VerticalContentAlignment="Center" Text="0" TextAlignment="Center"
+                                     ToolTip="0이면 시작 행과 동일"/>
+
+                            <CheckBox x:Name="CoupangDryRun" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="6"
+                                      Content="DRY RUN (등록하지 않고 미리보기만)" IsChecked="True"
+                                      FontSize="11" VerticalContentAlignment="Center"/>
+                        </Grid>
+
+                        <!-- 실행 -->
+                        <TextBlock Style="{StaticResource SectionLabel}" Text="실행" Margin="0,4,0,6"/>
+                        <Button x:Name="CoupangUploadButton" Content="쿠팡 업로드 실행"
+                                Background="#1565c0" Foreground="White"
+                                Style="{StaticResource ActionButton}"
+                                Click="CoupangUpload_Click"/>
+
+                        <!-- 결과 -->
+                        <TextBlock Style="{StaticResource SectionLabel}" Text="업로드 결과" Margin="0,10,0,6"/>
+                        <Border Background="White" BorderBrush="#ddd" BorderThickness="1" CornerRadius="6">
+                            <DataGrid x:Name="CoupangResultGrid" AutoGenerateColumns="False"
+                                      HeadersVisibility="Column" IsReadOnly="True"
+                                      GridLinesVisibility="Horizontal" BorderThickness="0"
+                                      FontSize="11" MinHeight="100" MaxHeight="300"
+                                      CanUserSortColumns="True">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="행" Binding="{Binding Row}" Width="50"/>
+                                    <DataGridTextColumn Header="상품명" Binding="{Binding Name}" Width="*"/>
+                                    <DataGridTextColumn Header="상태" Binding="{Binding Status}" Width="100"/>
+                                    <DataGridTextColumn Header="카테고리/ID" Binding="{Binding Info}" Width="160"/>
+                                    <DataGridTextColumn Header="오류" Binding="{Binding Error}" Width="160"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Border>
+
+                        <TextBlock x:Name="CoupangSummaryText" Margin="0,8,0,0" FontSize="11"
+                                   Foreground="#888" VerticalAlignment="Center"/>
+
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+
             <!-- ════════════ TAB 3: 옵션 가격 ════════════ -->
             <TabItem Header="  옵션 가격  " FontSize="13" FontWeight="SemiBold">
                 <Grid Margin="16,12">
@@ -922,6 +1002,70 @@
                                     Background="#c44536" Foreground="White" FontSize="13" FontWeight="Bold"
                                     Click="TestCafe24Upload_Click" IsEnabled="False"/>
                         </Grid>
+
+                        <!-- ──── 마켓 업로드 ──── -->
+                        <Rectangle Fill="#ccc" Height="1" Margin="0,16,0,8"/>
+                        <TextBlock Style="{StaticResource SectionLabel}" Text="마켓 업로드" Margin="0,4,0,6"/>
+                        <TextBlock Text="Cafe24 신규등록 완료 후, 아래 마켓 업로드 버튼으로 각 마켓에 등록합니다."
+                                   FontSize="11" Foreground="#888" Margin="0,0,0,8"/>
+
+                        <Grid Margin="0,0,0,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="20"/>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}" Text="시작 행"/>
+                            <TextBox x:Name="MarketRowStart" Grid.Column="1" Height="26" FontSize="11"
+                                     VerticalContentAlignment="Center" Text="0" TextAlignment="Center"
+                                     ToolTip="0이면 전체 행"/>
+                            <TextBlock Grid.Column="3" Style="{StaticResource FieldLabel}" Text="끝 행"/>
+                            <TextBox x:Name="MarketRowEnd" Grid.Column="4" Height="26" FontSize="11"
+                                     VerticalContentAlignment="Center" Text="0" TextAlignment="Center"/>
+                        </Grid>
+                        <CheckBox x:Name="MarketDryRun" Content="DRY RUN (등록하지 않고 미리보기만)"
+                                  IsChecked="True" FontSize="11" Margin="0,0,0,8"/>
+
+                        <Grid Margin="0,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="8"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="TestCoupangUploadButton" Grid.Column="0"
+                                    Content="쿠팡 업로드" Height="36"
+                                    Background="#1565c0" Foreground="White" FontSize="13" FontWeight="Bold"
+                                    Click="TestCoupangUpload_Click" IsEnabled="False"/>
+                            <Button x:Name="TestNaverUploadButton" Grid.Column="2"
+                                    Content="네이버 스마트스토어 업로드" Height="36"
+                                    Background="#03c75a" Foreground="White" FontSize="13" FontWeight="Bold"
+                                    Click="TestNaverUpload_Click" IsEnabled="False"/>
+                        </Grid>
+
+                        <!-- 마켓 업로드 결과 -->
+                        <TextBlock x:Name="MarketUploadSummary" Margin="0,8,0,4" FontSize="11"
+                                   Foreground="#555" TextWrapping="Wrap"/>
+                        <Border Background="White" BorderBrush="#ddd" BorderThickness="1" CornerRadius="6"
+                                Margin="0,0,0,8">
+                            <DataGrid x:Name="MarketUploadResultGrid" AutoGenerateColumns="False"
+                                      HeadersVisibility="Column" IsReadOnly="True"
+                                      GridLinesVisibility="Horizontal" BorderThickness="0"
+                                      FontSize="11" MinHeight="80" MaxHeight="260"
+                                      CanUserSortColumns="True">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="마켓" Binding="{Binding Market}" Width="80"/>
+                                    <DataGridTextColumn Header="행" Binding="{Binding Row}" Width="50"/>
+                                    <DataGridTextColumn Header="상품명" Binding="{Binding Name}" Width="*"/>
+                                    <DataGridTextColumn Header="상태" Binding="{Binding Status}" Width="90"/>
+                                    <DataGridTextColumn Header="정보" Binding="{Binding Info}" Width="140"/>
+                                    <DataGridTextColumn Header="오류" Binding="{Binding Error}" Width="140"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Border>
+
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>

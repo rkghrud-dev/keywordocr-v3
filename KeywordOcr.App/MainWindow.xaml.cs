@@ -1150,6 +1150,25 @@ public partial class MainWindow : Window
             _testLlmResultFiles = dlg.FileNames.OrderBy(f => f).ToList();
             _testLlmResultFile = _testLlmResultFiles[0]; // 호환용
 
+            // LLM 결과 파일에서 _testOutputRoot 자동 추론
+            // 경로 예: .../exports/20260331_xxx/llm_chunks/llm_result/chunk_01_llm.xlsx
+            var firstDir = Path.GetDirectoryName(_testLlmResultFiles[0])!;
+            if (firstDir.Contains("llm_chunks"))
+            {
+                // llm_chunks 상위 = export root
+                var chunksDir = firstDir;
+                while (!string.IsNullOrEmpty(chunksDir) && Path.GetFileName(chunksDir) != "llm_chunks")
+                    chunksDir = Path.GetDirectoryName(chunksDir);
+                if (!string.IsNullOrEmpty(chunksDir))
+                    _testOutputRoot = Path.GetDirectoryName(chunksDir);
+            }
+            else if (firstDir.Contains("llm_result"))
+            {
+                _testOutputRoot = Path.GetDirectoryName(firstDir);
+            }
+            if (string.IsNullOrEmpty(_testOutputRoot))
+                _testOutputRoot = firstDir;
+
             if (_testLlmResultFiles.Count == 1)
                 TestLlmResultFileText.Text = $"LLM 결과: {Path.GetFileName(_testLlmResultFiles[0])}";
             else
@@ -1157,6 +1176,8 @@ public partial class MainWindow : Window
 
             TestCafe24UploadButton.IsEnabled = true;
             TestCafe24CreateButton.IsEnabled = true;
+            TestCoupangUploadButton.IsEnabled = true;
+            TestNaverUploadButton.IsEnabled = true;
 
             foreach (var f in _testLlmResultFiles)
                 Log($"LLM 결과 파일: {Path.GetFileName(f)}");
@@ -1265,6 +1286,182 @@ public partial class MainWindow : Window
 
         // 기존 Cafe24 업로드 로직 재사용
         Cafe24Upload_Click(sender, e);
+    }
+
+    private async void TestCoupangUpload_Click(object sender, RoutedEventArgs e)
+    {
+        // _testOutputRoot에서 업로드용 엑셀 자동 탐색
+        var sourcePath = FindUploadExcel();
+        if (sourcePath == null)
+        {
+            MessageBox.Show("업로드용 엑셀 파일을 찾을 수 없습니다.\nCafe24 업로드를 먼저 실행하세요.", "알림",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var dryRun = MarketDryRun.IsChecked == true;
+        if (!dryRun)
+        {
+            var confirm = MessageBox.Show(
+                $"쿠팡에 상품을 실제 등록합니다.\n\n파일: {Path.GetFileName(sourcePath)}\n\n계속하시겠습니까?",
+                "쿠팡 실제 등록 확인", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (confirm != MessageBoxResult.Yes) return;
+        }
+
+        TestCoupangUploadButton.IsEnabled = false;
+        _cts = new CancellationTokenSource();
+
+        try
+        {
+            StatusText.Text = dryRun ? "쿠팡 DRY RUN 중..." : "쿠팡 등록 중...";
+            ProgressBar.IsIndeterminate = true;
+            Log($"[쿠팡] 업로드 시작: {Path.GetFileName(sourcePath)} (DRY RUN: {dryRun})");
+
+            var options = new CoupangUploadOptions
+            {
+                RowStart = ParseInt(MarketRowStart, 0),
+                RowEnd = ParseInt(MarketRowEnd, 0),
+                DryRun = dryRun,
+            };
+
+            var service = new CoupangUploadService();
+            var progress = new Progress<string>(msg => Log(msg));
+            var result = await service.UploadAsync(sourcePath, options, progress, _cts.Token);
+
+            var gridItems = result.Items.Select(item => new MarketResultRow
+            {
+                Market = "쿠팡",
+                Row = item.Row,
+                Name = item.Name,
+                Status = item.Status,
+                Info = !string.IsNullOrEmpty(item.SellerProductId) ? item.SellerProductId : item.Category,
+                Error = item.Error,
+            }).ToList();
+            MarketUploadResultGrid.ItemsSource = gridItems;
+            MarketUploadSummary.Text = $"[쿠팡] 성공 {result.SuccessCount} / 실패 {result.FailCount} / 전체 {result.TotalCount}";
+            StatusText.Text = $"쿠팡 {(dryRun ? "DRY RUN" : "등록")} 완료";
+            Log($"[쿠팡] 완료: 성공 {result.SuccessCount} / 실패 {result.FailCount} / 전체 {result.TotalCount}");
+            foreach (var item in result.Items.Where(i => !string.IsNullOrEmpty(i.Error)))
+                Log($"  [쿠팡 오류] 행{item.Row} {item.Name} → {item.Error}");
+        }
+        catch (OperationCanceledException) { Log("[쿠팡] 취소됨"); StatusText.Text = "취소됨"; }
+        catch (Exception ex)
+        {
+            Log($"[쿠팡] 오류: {ex.Message}");
+            StatusText.Text = "쿠팡 업로드 오류";
+            MessageBox.Show(ex.Message, "쿠팡 업로드 오류", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            TestCoupangUploadButton.IsEnabled = true;
+            ProgressBar.IsIndeterminate = false;
+        }
+    }
+
+    private async void TestNaverUpload_Click(object sender, RoutedEventArgs e)
+    {
+        var sourcePath = FindUploadExcel();
+        if (sourcePath == null)
+        {
+            MessageBox.Show("업로드용 엑셀 파일을 찾을 수 없습니다.\nCafe24 업로드를 먼저 실행하세요.", "알림",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var dryRun = MarketDryRun.IsChecked == true;
+        if (!dryRun)
+        {
+            var confirm = MessageBox.Show(
+                $"네이버 스마트스토어에 상품을 실제 등록합니다.\n\n파일: {Path.GetFileName(sourcePath)}\n\n계속하시겠습니까?",
+                "네이버 실제 등록 확인", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (confirm != MessageBoxResult.Yes) return;
+        }
+
+        TestNaverUploadButton.IsEnabled = false;
+        _cts = new CancellationTokenSource();
+
+        try
+        {
+            StatusText.Text = dryRun ? "네이버 DRY RUN 중..." : "네이버 등록 중...";
+            ProgressBar.IsIndeterminate = true;
+            Log($"[네이버] 업로드 시작: {Path.GetFileName(sourcePath)} (DRY RUN: {dryRun})");
+
+            var options = new NaverUploadOptions
+            {
+                RowStart = ParseInt(MarketRowStart, 0),
+                RowEnd = ParseInt(MarketRowEnd, 0),
+                DryRun = dryRun,
+            };
+
+            var service = new NaverUploadService();
+            var progress = new Progress<string>(msg => Log(msg));
+            var result = await service.UploadAsync(sourcePath, options, progress, _cts.Token);
+
+            var gridItems = result.Items.Select(item => new MarketResultRow
+            {
+                Market = "네이버",
+                Row = item.Row,
+                Name = item.Name,
+                Status = item.Status,
+                Info = item.ProductId,
+                Error = item.Error,
+            }).ToList();
+            MarketUploadResultGrid.ItemsSource = gridItems;
+            MarketUploadSummary.Text = $"[네이버] 성공 {result.SuccessCount} / 실패 {result.FailCount} / 전체 {result.TotalCount}";
+            StatusText.Text = $"네이버 {(dryRun ? "DRY RUN" : "등록")} 완료";
+            Log($"[네이버] 완료: 성공 {result.SuccessCount} / 실패 {result.FailCount} / 전체 {result.TotalCount}");
+            foreach (var item in result.Items.Where(i => !string.IsNullOrEmpty(i.Error)))
+                Log($"  [네이버 오류] 행{item.Row} {item.Name} → {item.Error}");
+        }
+        catch (OperationCanceledException) { Log("[네이버] 취소됨"); StatusText.Text = "취소됨"; }
+        catch (Exception ex)
+        {
+            Log($"[네이버] 오류: {ex.Message}");
+            StatusText.Text = "네이버 업로드 오류";
+            MessageBox.Show(ex.Message, "네이버 업로드 오류", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            TestNaverUploadButton.IsEnabled = true;
+            ProgressBar.IsIndeterminate = false;
+        }
+    }
+
+    private string? FindUploadExcel()
+    {
+        // 1) LLM 결과 파일 우선 사용 (키워드/검색어/태그가 적용된 파일)
+        if (_testLlmResultFiles.Count > 0)
+        {
+            var first = _testLlmResultFiles.FirstOrDefault(File.Exists);
+            if (first != null)
+            {
+                Log($"LLM 결과 파일 사용: {Path.GetFileName(first)}");
+                return first;
+            }
+        }
+        // 2) _testOutputRoot에서 업로드용 엑셀 탐색
+        if (!string.IsNullOrEmpty(_testOutputRoot) && Directory.Exists(_testOutputRoot))
+        {
+            var found = FindLatestFile(_testOutputRoot, "업로드용_*.xlsx");
+            if (found != null) return found;
+        }
+        // 3) _lastOutputRoot에서 업로드용 엑셀 탐색
+        if (!string.IsNullOrEmpty(_lastOutputRoot) && Directory.Exists(_lastOutputRoot))
+        {
+            var found = FindLatestFile(_lastOutputRoot, "업로드용_*.xlsx");
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private sealed class MarketResultRow
+    {
+        public string Market { get; set; } = "";
+        public int Row { get; set; }
+        public string Name { get; set; } = "";
+        public string Status { get; set; } = "";
+        public string Info { get; set; } = "";
+        public string Error { get; set; } = "";
     }
 
     #endregion
@@ -1467,6 +1664,135 @@ public partial class MainWindow : Window
             Cafe24CreateButton.IsEnabled = true;
             ProgressBar.IsIndeterminate = false;
         }
+    }
+
+    // ═══════════════════════════════════════
+    // ── 쿠팡 업로드 ──────────────────────
+    // ═══════════════════════════════════════
+
+    private void CoupangSource_DragOver(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            e.Effects = DragDropEffects.Copy;
+        else
+            e.Effects = DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void CoupangSource_Drop(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
+        {
+            CoupangSourcePath.Text = files[0];
+        }
+    }
+
+    private void CoupangBrowseSource_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Filter = "Excel Files|*.xlsx;*.xls",
+            Title = "가공파일 선택",
+            InitialDirectory = @"C:\code\exports",
+        };
+        if (dlg.ShowDialog() == true)
+        {
+            CoupangSourcePath.Text = dlg.FileName;
+        }
+    }
+
+    private async void CoupangUpload_Click(object sender, RoutedEventArgs e)
+    {
+        var sourcePath = CoupangSourcePath.Text.Trim();
+        if (string.IsNullOrEmpty(sourcePath) || !File.Exists(sourcePath))
+        {
+            // _lastOutputRoot에서 자동 탐색
+            if (!string.IsNullOrEmpty(_lastOutputRoot) && Directory.Exists(_lastOutputRoot))
+            {
+                var found = FindLatestFile(_lastOutputRoot, "업로드용_*.xlsx");
+                if (found != null)
+                {
+                    sourcePath = found;
+                    CoupangSourcePath.Text = sourcePath;
+                }
+                else
+                {
+                    MessageBox.Show("가공파일(업로드용 엑셀)을 선택해주세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+            }
+            else
+            {
+                MessageBox.Show("가공파일(업로드용 엑셀)을 선택해주세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+        }
+
+        var dryRun = CoupangDryRun.IsChecked == true;
+        if (!dryRun)
+        {
+            var confirm = MessageBox.Show(
+                $"쿠팡에 상품을 실제 등록합니다.\n\n파일: {Path.GetFileName(sourcePath)}\n\n계속하시겠습니까?",
+                "쿠팡 실제 등록 확인", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (confirm != MessageBoxResult.Yes) return;
+        }
+
+        CoupangUploadButton.IsEnabled = false;
+        _cts = new CancellationTokenSource();
+
+        try
+        {
+            StatusText.Text = dryRun ? "쿠팡 DRY RUN 중..." : "쿠팡 등록 중...";
+            ProgressBar.IsIndeterminate = true;
+            Log($"쿠팡 업로드 시작: {Path.GetFileName(sourcePath)} (DRY RUN: {dryRun})");
+
+            var options = new CoupangUploadOptions
+            {
+                RowStart = ParseInt(CoupangRowStart, 0),
+                RowEnd = ParseInt(CoupangRowEnd, 0),
+                DryRun = dryRun,
+            };
+
+            var service = new CoupangUploadService();
+            var progress = new Progress<string>(msg => Log(msg));
+
+            var result = await service.UploadAsync(sourcePath, options, progress, _cts.Token);
+
+            // 결과 그리드
+            var gridItems = result.Items.Select(item => new CoupangResultRow
+            {
+                Row = item.Row,
+                Name = item.Name,
+                Status = item.Status,
+                Info = !string.IsNullOrEmpty(item.SellerProductId) ? item.SellerProductId : item.Category,
+                Error = item.Error,
+            }).ToList();
+            CoupangResultGrid.ItemsSource = gridItems;
+            CoupangSummaryText.Text = $"성공 {result.SuccessCount} / 실패 {result.FailCount} / 전체 {result.TotalCount}";
+            StatusText.Text = $"쿠팡 {(dryRun ? "DRY RUN" : "등록")} 완료";
+            Log($"쿠팡 완료: 성공 {result.SuccessCount} / 실패 {result.FailCount} / 전체 {result.TotalCount}");
+        }
+        catch (OperationCanceledException) { Log("쿠팡 업로드 취소됨"); StatusText.Text = "취소됨"; }
+        catch (Exception ex)
+        {
+            Log($"쿠팡 오류: {ex.Message}");
+            StatusText.Text = "쿠팡 업로드 오류";
+            MessageBox.Show(ex.Message, "쿠팡 업로드 오류", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            CoupangUploadButton.IsEnabled = true;
+            ProgressBar.IsIndeterminate = false;
+        }
+    }
+
+    private sealed class CoupangResultRow
+    {
+        public int Row { get; set; }
+        public string Name { get; set; } = "";
+        public string Status { get; set; } = "";
+        public string Info { get; set; } = "";
+        public string Error { get; set; } = "";
     }
 
     private void LoadUploadLog(string? logPath)

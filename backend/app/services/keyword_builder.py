@@ -316,20 +316,135 @@ _GENERIC_WORDS = {
 
 def _pick_base_core(category_words: list[str], type_words: list[str]) -> str:
     """핵심 상품어 선택. 일반 명사(고정, 배관 등)를 제외하고 대표 상품명을 반환."""
-    # category에서 비일반 명사 우선
-    for w in category_words:
+    # 한국 상품명은 보통 마지막 명사가 제품 헤드라서 뒤에서부터 탐색한다.
+    for w in reversed(category_words):
         if w not in _GENERIC_WORDS and len(w) >= 2:
             return w
-    # product_type_correction에서 비일반 명사
-    for w in type_words:
+    for w in reversed(type_words):
         if w not in _GENERIC_WORDS and len(w) >= 2:
             return w
-    # fallback: category 첫번째
     if category_words:
-        return category_words[0]
+        return category_words[-1]
     if type_words:
-        return type_words[0]
+        return type_words[-1]
     return ""
+
+
+def _should_compact_core_phrase(modifier: str, base_core: str) -> bool:
+    mod = _normalize_token(modifier)
+    base = _normalize_token(base_core)
+    if not mod or not base:
+        return False
+    # 한글 일반 명사는 붙이지 않고 띄어써야 자연스럽다. PVC/304 같은 짧은 표기만 합성 허용.
+    if re.fullmatch(r"[A-Za-z0-9\-\+]{1,4}", mod):
+        return True
+    return False
+
+
+
+_HEAD_SUFFIXES = [
+    "브라켓", "브래킷", "거치대", "받침대", "지지대", "홀더", "클립",
+    "커넥터", "조인트", "클램프", "노즐", "테이프", "커버", "마개",
+    "캡", "패드", "브러시", "필터", "밸브", "후크", "고리",
+    "볼트", "너트", "핀", "호스", "파이프", "케이블",
+]
+
+_NAME_CONTEXT_WORDS = [
+    "하수구", "배수구", "세면대", "싱크대", "욕실", "주방", "차량", "자동차",
+    "스위치", "호스", "배관", "파이프", "관개", "정원", "조명", "전선",
+    "케이블", "벽면", "천장", "창문", "문", "트렁크", "본넷", "밑창",
+]
+
+_NAME_ACTION_WORDS = [
+    "세척", "고정", "연결", "장착", "설치", "분사", "배수", "누수",
+    "방지", "보호", "정리", "거치", "교체", "수리", "지지", "보수",
+]
+
+_CONTEXT_SUFFIX_HEADS = {
+    "핀", "브라켓", "브래킷", "거치대", "받침대", "지지대", "홀더",
+    "클립", "커넥터", "조인트", "클램프", "테이프", "커버", "마개",
+    "캡", "패드", "후크", "고리", "볼트", "너트",
+}
+
+_ALLOWED_COMPOUNDS = {"고정핀"}
+
+_ACTION_REDUNDANT_HEADS = {"커넥터", "조인트"}
+
+
+def _extract_name_only_tokens(fallback_text: str, market: str = "A") -> list[str]:
+    raw = _normalize_token(re.sub(r"GS\d{7}[A-Z]?", " ", str(fallback_text or ""))).strip()
+    if not raw:
+        return []
+
+    raw_parts = [
+        part for part in raw.split()
+        if part and not re.search(r"\d", part)
+    ]
+    raw = " ".join(raw_parts).strip() or raw
+
+    joined = raw.replace(" ", "")
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _push(token: str) -> None:
+        t = _normalize_token(token)
+        if not t or len(t) < 2 or len(t) > _MAX_TOKEN_LEN or t in seen:
+            return
+        seen.add(t)
+        out.append(t)
+
+    def _context_token(word: str, use_suffix: bool) -> str:
+        token = _normalize_token(word)
+        if not token:
+            return ""
+        if use_suffix and not token.endswith("용"):
+            candidate = token + "용"
+            if len(candidate) <= _MAX_TOKEN_LEN:
+                return candidate
+        return token
+
+    head = ""
+    for suffix in _HEAD_SUFFIXES:
+        if joined.endswith(suffix):
+            head = suffix
+            break
+    stem = joined[:-len(head)] if head else joined
+
+    matched_contexts = [word for word in _NAME_CONTEXT_WORDS if word in stem]
+    matched_actions = [word for word in _NAME_ACTION_WORDS if word in stem]
+    primary_action = matched_actions[0] if matched_actions else ""
+
+    compact_token = ""
+    if primary_action and head:
+        candidate = primary_action + head
+        if candidate in _ALLOWED_COMPOUNDS and len(candidate) <= _MAX_TOKEN_LEN:
+            compact_token = candidate
+
+    keep_action = bool(primary_action) and not compact_token and head not in _ACTION_REDUNDANT_HEADS
+    use_context_suffix = bool(head in _CONTEXT_SUFFIX_HEADS and (compact_token or (not keep_action)))
+
+    if matched_contexts:
+        _push(_context_token(matched_contexts[0], use_context_suffix))
+        for extra_context in matched_contexts[1:]:
+            _push(extra_context)
+
+    if compact_token:
+        _push(compact_token)
+    else:
+        if keep_action:
+            _push(primary_action)
+        if head:
+            _push(head)
+        elif primary_action:
+            _push(primary_action)
+
+    if not out:
+        for part in raw.split():
+            _push(part)
+    if not out and joined:
+        _push(joined)
+
+    return out[:4]
 
 
 def build_keyword_string(
@@ -352,6 +467,8 @@ def build_keyword_string(
     - 90~140자 목표
     """
     try:
+        ocr_text = "" if "OCR 텍스트 없음" in str(ocr_text or "") else str(ocr_text or "")
+
         # 마켓별 글자수 규칙
         if market == "B":
             min_char = _MIN_CHAR_TARGET_B
@@ -426,12 +543,17 @@ def build_keyword_string(
 
         # ── Phase 1: 대표 합성어 1개 (PVC클램프 등) ──
         compound_mod_used = ""
-        if base_core and purpose_words:
-            best_mod = purpose_words[0]
-            compound = best_mod + base_core
-            if len(compound) <= _MAX_TOKEN_LEN:
-                if _try_add(compound):
-                    compound_mod_used = best_mod
+        if base_core:
+            if purpose_words:
+                best_mod = purpose_words[0]
+                compound = best_mod + base_core
+                if _should_compact_core_phrase(best_mod, base_core) and len(compound) <= _MAX_TOKEN_LEN:
+                    if _try_add(compound):
+                        compound_mod_used = best_mod
+                else:
+                    _try_add(base_core)
+            else:
+                _try_add(base_core)
 
         # ── Phase 2: 용도 "~용" (파이프용, 배관용 등) — 합성어에 쓰인 것 제외 ──
         for pw in purpose_words:
@@ -496,7 +618,7 @@ def build_keyword_string(
             _try_add(t)
 
         # ── Phase 7: 상품명 보충 ──
-        if fallback_text and not _is_full():
+        if fallback_text and not _is_full() and (analysis or _normalize_token(ocr_text)):
             for m in re.findall(r"[0-9A-Za-z가-힣]{2,14}", _normalize_token(fallback_text)):
                 if _is_full():
                     break
@@ -504,13 +626,19 @@ def build_keyword_string(
                     _try_add(m)
 
         # ── 글자수 보강 ──
+        if _char_len() < min_char and fallback_text:
+            for token in _extract_name_only_tokens(fallback_text, market=market):
+                _try_add(token)
+                if _char_len() >= min_char:
+                    break
+
         if _char_len() < min_char:
             for cw in core_words:
                 _try_add(cw)
                 if _char_len() >= min_char:
                     break
 
-        if _char_len() < min_char:
+        if _char_len() < min_char and (analysis or _normalize_token(ocr_text)):
             for seg in sorted(_COMMON_SEGMENTS, key=lambda x: -len(x)):
                 _try_add(seg)
                 if _char_len() >= min_char:

@@ -288,7 +288,13 @@ def _build_coupang_image_urls(row: dict, detail_html: str) -> list[str]:
 def read_source_file(file_path: str) -> list[dict]:
     import openpyxl
     wb = openpyxl.load_workbook(file_path)
-    ws = wb.active
+    # 쿠팡은 B마켓 → "B마켓" 시트 우선, 없으면 "분리추출후", 최종 fallback active
+    if "B마켓" in wb.sheetnames:
+        ws = wb["B마켓"]
+    elif "분리추출후" in wb.sheetnames:
+        ws = wb["분리추출후"]
+    else:
+        ws = wb.active
     headers = {c.column: c.value for c in ws[1] if c.value}
     rows = []
     for r in range(2, ws.max_row + 1):

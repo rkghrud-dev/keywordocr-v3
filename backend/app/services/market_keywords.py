@@ -178,10 +178,11 @@ def generate_market_keyword_packages(
     baseline=None,
     naver_keyword_table: str = "",
     market: str = "A",
+    avoid_terms: Iterable[str] | str | None = None,
 ) -> MarketKeywordPackages:
     anchor_set = set(anchors or [])
     baseline_set = set(baseline or [])
-
+    avoid_keys = _build_avoid_semantic_keys(avoid_terms)
     llm_bucketed = _generate_bucket_candidates_llm(
         product_name=product_name,
         source_text=source_text,
@@ -200,7 +201,13 @@ def generate_market_keyword_packages(
         bucketed[bucket].extend(fallback_bucketed.get(bucket, []))
 
     bucketed["synonyms"].extend(_extract_naver_candidates(naver_keyword_table))
-    bucketed = _normalize_bucket_map(bucketed, anchors=anchor_set, baseline=baseline_set)
+    bucketed = _normalize_bucket_map(
+        bucketed,
+        anchors=anchor_set,
+        baseline=baseline_set,
+        market=market,
+        avoid_keys=avoid_keys,
+    )
 
     candidate_pool = _flatten_bucket_map(bucketed)
     coupang_tags = _build_coupang_tags(
@@ -211,6 +218,7 @@ def generate_market_keyword_packages(
         anchors=anchor_set,
         baseline=baseline_set,
         market=market,
+        avoid_keys=avoid_keys,
     )
     naver_tags = _build_naver_tags(
         bucketed=bucketed,
@@ -220,6 +228,7 @@ def generate_market_keyword_packages(
         anchors=anchor_set,
         baseline=baseline_set,
         market=market,
+        avoid_keys=avoid_keys,
     )
 
     search_source = coupang_tags or [_compact_phrase(x) for x in candidate_pool]
@@ -278,6 +287,43 @@ def _semantic_key(text: str) -> str:
     key = re.sub(r"(용|형|식)$", "", key)
     return key
 
+
+def _build_avoid_semantic_keys(values: Iterable[str] | str | None) -> set[str]:
+    if values is None:
+        return set()
+
+    if isinstance(values, str):
+        raws = [values]
+    else:
+        raws = [str(x) for x in values if str(x).strip()]
+
+    keys: set[str] = set()
+    for raw in raws:
+        phrase = _normalize_phrase(raw)
+        if not phrase:
+            continue
+
+        pieces = [phrase]
+        pieces.extend(_TOKEN_RE.findall(phrase))
+        pieces.extend(_collect_adjacent_phrases(phrase, max_tokens=24, max_size=2))
+
+        for piece in pieces:
+            key = _semantic_key(piece)
+            if key:
+                keys.add(key)
+    return keys
+
+
+def _matches_avoid_semantics(key: str, avoid_keys: set[str] | None) -> bool:
+    if not key or not avoid_keys:
+        return False
+
+    for avoid in avoid_keys:
+        if not avoid:
+            continue
+        if key == avoid or avoid in key or key in avoid:
+            return True
+    return False
 
 def _is_bad_phrase(text: str) -> bool:
     compact = _compact_phrase(text)
@@ -453,6 +499,8 @@ def _normalize_bucket_map(
     bucketed: dict[str, Iterable[str]],
     anchors: set[str],
     baseline: set[str],
+    market: str = "A",
+    avoid_keys: set[str] | None = None,
 ) -> dict[str, list[str]]:
     out = _empty_bucket_map()
     seen: set[str] = set()
@@ -466,6 +514,8 @@ def _normalize_bucket_map(
                 continue
             key = _semantic_key(phrase)
             if not key or key in seen:
+                continue
+            if market == "B" and bucket != "identity" and _matches_avoid_semantics(key, avoid_keys):
                 continue
             seen.add(key)
             out[bucket].append(phrase)
@@ -489,6 +539,7 @@ def _build_coupang_tags(
     anchors: set[str],
     baseline: set[str],
     market: str = "A",
+    avoid_keys: set[str] | None = None,
 ) -> list[str]:
     if market == "B":
         # B마켓: 총 14개, 버킷순서 변경 (identity→function→usage→material→problem→audience→synonyms)
@@ -532,6 +583,8 @@ def _build_coupang_tags(
     for bucket, quota in plan:
         added = 0
         for value in bucketed.get(bucket, []):
+            if market == "B" and bucket != "identity" and _matches_avoid_semantics(_semantic_key(value), avoid_keys):
+                continue
             if push(value):
                 added += 1
             if added >= quota or len(out) >= max_tags:
@@ -540,11 +593,15 @@ def _build_coupang_tags(
             return out[:max_tags]
 
     for value in candidate_pool:
+        if market == "B" and _matches_avoid_semantics(_semantic_key(value), avoid_keys):
+            continue
         push(value)
         if len(out) >= max_tags:
             return out[:max_tags]
 
     for value in _collect_adjacent_phrases(product_name, max_tokens=16, max_size=2):
+        if market == "B" and _matches_avoid_semantics(_semantic_key(value), avoid_keys):
+            continue
         push(value)
         if len(out) >= max_tags:
             break
@@ -559,6 +616,7 @@ def _build_naver_tags(
     anchors: set[str],
     baseline: set[str],
     market: str = "A",
+    avoid_keys: set[str] | None = None,
 ) -> list[str]:
     if market == "B":
         # B마켓: 총 7개
@@ -604,6 +662,8 @@ def _build_naver_tags(
     for bucket, quota in plan:
         added = 0
         for value in bucketed.get(bucket, []):
+            if market == "B" and bucket != "identity" and _matches_avoid_semantics(_semantic_key(value), avoid_keys):
+                continue
             if push(value):
                 added += 1
             if added >= quota or len(out) >= max_tags:
@@ -612,11 +672,15 @@ def _build_naver_tags(
             return out[:max_tags]
 
     for value in candidate_pool:
+        if market == "B" and _matches_avoid_semantics(_semantic_key(value), avoid_keys):
+            continue
         push(value)
         if len(out) >= max_tags:
             return out[:max_tags]
 
     for value in _collect_adjacent_phrases(product_name, max_tokens=16, max_size=2):
+        if market == "B" and _matches_avoid_semantics(_semantic_key(value), avoid_keys):
+            continue
         push(value)
         if len(out) >= max_tags:
             break
