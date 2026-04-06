@@ -24,14 +24,17 @@ public sealed class CoupangApiClient : IDisposable
     private readonly string _secretKey;
     private readonly string _vendorId;
     private readonly HttpClient _http;
+    private readonly long? _referenceSellerProductId;
 
     public string VendorId => _vendorId;
+    public long? ReferenceSellerProductId => _referenceSellerProductId;
 
-    public CoupangApiClient(string accessKey, string secretKey, string vendorId)
+    public CoupangApiClient(string accessKey, string secretKey, string vendorId, long? referenceSellerProductId = null)
     {
         _accessKey = accessKey;
         _secretKey = secretKey;
         _vendorId = vendorId;
+        _referenceSellerProductId = referenceSellerProductId;
 
         var handler = new HttpClientHandler
         {
@@ -63,12 +66,23 @@ public sealed class CoupangApiClient : IDisposable
         var accessKey = kv.GetValueOrDefault("access_key", "");
         var secretKey = kv.GetValueOrDefault("secret_key", "");
         var vendorId = kv.GetValueOrDefault("vendor_id", "");
+        var referenceSellerProductId = ParseOptionalLong(
+            kv.GetValueOrDefault("reference_seller_product_id",
+            kv.GetValueOrDefault("REFERENCE_SELLER_PRODUCT_ID", "")));
 
         if (string.IsNullOrEmpty(accessKey) || string.IsNullOrEmpty(secretKey))
             throw new InvalidOperationException(
                 $"쿠팡 API 키를 찾을 수 없습니다: {keyFile}");
 
-        return new CoupangApiClient(accessKey, secretKey, vendorId);
+        return new CoupangApiClient(accessKey, secretKey, vendorId, referenceSellerProductId);
+    }
+
+    private static long? ParseOptionalLong(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+
+        return long.TryParse(raw.Trim(), out var value) ? value : null;
     }
 
     // ── 서명 생성 ──────────────────────────────────
@@ -115,7 +129,6 @@ public sealed class CoupangApiClient : IDisposable
 
             using var resp = await _http.SendAsync(req, ct);
 
-            // 429 Too Many Requests → 재시도
             if (resp.StatusCode == (System.Net.HttpStatusCode)429 && attempt < maxRetries)
             {
                 await Task.Delay(1500, ct);
@@ -124,35 +137,34 @@ public sealed class CoupangApiClient : IDisposable
 
             var raw = await resp.Content.ReadAsByteArrayAsync(ct);
 
-        // gzip 해제
-        if (raw.Length >= 2 && raw[0] == 0x1f && raw[1] == 0x8b)
-        {
-            using var ms = new MemoryStream(raw);
-            using var gz = new GZipStream(ms, CompressionMode.Decompress);
-            using var reader = new MemoryStream();
-            await gz.CopyToAsync(reader, ct);
-            raw = reader.ToArray();
-        }
+            if (raw.Length >= 2 && raw[0] == 0x1f && raw[1] == 0x8b)
+            {
+                using var ms = new MemoryStream(raw);
+                using var gz = new GZipStream(ms, CompressionMode.Decompress);
+                using var reader = new MemoryStream();
+                await gz.CopyToAsync(reader, ct);
+                raw = reader.ToArray();
+            }
 
-        if (raw.Length == 0)
-        {
-            var errJson = $$$"""{"code":"ERROR","message":"빈 응답 (HTTP {{{(int)resp.StatusCode}}})" }""";
-            return JsonDocument.Parse(errJson);
-        }
+            if (raw.Length == 0)
+            {
+                var errJson = $$$"""{"code":"ERROR","message":"빈 응답 (HTTP {{{(int)resp.StatusCode}}})" }""";
+                return JsonDocument.Parse(errJson);
+            }
 
-        try
-        {
-            return JsonDocument.Parse(raw);
+            try
+            {
+                return JsonDocument.Parse(raw);
+            }
+            catch
+            {
+                var text = Encoding.UTF8.GetString(raw);
+                if (text.Length > 300) text = text[..300];
+                text = text.Replace("\"", "'").Replace("\\", "");
+                var errJson = $$$"""{"code":"ERROR","message":"JSON 파싱 실패: {{{text}}}" }""";
+                return JsonDocument.Parse(errJson);
+            }
         }
-        catch
-        {
-            var text = Encoding.UTF8.GetString(raw);
-            if (text.Length > 300) text = text[..300];
-            text = text.Replace("\"", "'").Replace("\\", "");
-            var errJson = $$$"""{"code":"ERROR","message":"JSON 파싱 실패: {{{text}}}" }""";
-            return JsonDocument.Parse(errJson);
-        }
-        } // end retry loop
     }
 
     // ── 공개 API ───────────────────────────────────
@@ -170,6 +182,13 @@ public sealed class CoupangApiClient : IDisposable
     public async Task<JsonDocument> GetCategoryMetaAsync(long categoryCode, CancellationToken ct = default)
     {
         var path = $"/v2/providers/seller_api/apis/api/v1/marketplace/meta/category-related-metas/display-category-codes/{categoryCode}";
+        return await CallAsync("GET", path, ct: ct);
+    }
+
+    /// <summary>기준 상품 조회</summary>
+    public async Task<JsonDocument> GetProductAsync(long sellerProductId, CancellationToken ct = default)
+    {
+        var path = $"/v2/providers/seller_api/apis/api/v1/marketplace/seller-products/{sellerProductId}";
         return await CallAsync("GET", path, ct: ct);
     }
 

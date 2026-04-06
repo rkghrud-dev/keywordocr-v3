@@ -73,6 +73,15 @@ public sealed class CoupangUploadService
         Log($"처리 대상: {targetRows.Count}개");
         var results = new List<CoupangUploadResultItem>();
         var categoryCache = new Dictionary<long, JsonElement>();
+        var deliveryTemplate = await LoadReferenceDeliveryTemplateAsync(api, Log, ct);
+        var cafe24MarketData = await Cafe24MarketDataService.TryCreateAsync(sourcePath, Log, ct);
+
+        if (cafe24MarketData is not null)
+        {
+            Log("Cafe24 상품 데이터 동기화 중...");
+            foreach (var row in targetRows)
+                await cafe24MarketData.TryApplyAsync(row, ct);
+        }
 
         // ── 1단계: 카테고리 추천 ──────────────────
 
@@ -122,7 +131,6 @@ public sealed class CoupangUploadService
                             using var doc = await api.PredictCategoryAsync(productName, ct);
                             var root = doc.RootElement;
 
-                            // 에러 응답 체크
                             if (root.TryGetProperty("code", out var codeProp))
                             {
                                 var codeStr = codeProp.ValueKind == System.Text.Json.JsonValueKind.String
@@ -166,7 +174,6 @@ public sealed class CoupangUploadService
                 await Task.WhenAll(tasks);
                 Log($"[{batchEnd}/{needPredict.Count}] 카테고리 추천 중...");
 
-                // 배치 간 최소 1.5초 대기 (429 방지)
                 var elapsed = (DateTime.UtcNow - batchT0).TotalSeconds;
                 if (elapsed < 1.5)
                     await Task.Delay(TimeSpan.FromSeconds(1.5 - elapsed), ct);
@@ -218,35 +225,56 @@ public sealed class CoupangUploadService
             foreach (var row in targetRows)
             {
                 var sku = GetStr(row, "자체 상품코드");
-                if (string.IsNullOrEmpty(sku)) continue;
+                List<string> sourceImages;
+                string sourceLabel;
 
-                // listing_images 폴더에서 가공이미지 찾기
-                var sourceFile = GetStr(row, "_source_file_path");
-                var exportRoot = GetStr(row, "_export_root");
-                if (string.IsNullOrEmpty(exportRoot)) continue;
-
-                var imageFiles = FindListingImages(exportRoot, sku);
-                if (imageFiles.Count == 0)
+                if (row.TryGetValue("_cafe24_image_urls", out var cafe24Images) && cafe24Images is IEnumerable<string> cafe24List && cafe24List.Any())
                 {
-                    Log($"  {sku}: listing_images 없음 (엑셀 URL fallback)");
-                    continue;
+                    sourceImages = cafe24List
+                        .Where(u => !string.IsNullOrWhiteSpace(u))
+                        .Take(9)
+                        .ToList();
+                    sourceLabel = "Cafe24";
+                }
+                else
+                {
+                    var exportRoot = GetStr(row, "_export_root");
+                    if (string.IsNullOrEmpty(sku) || string.IsNullOrEmpty(exportRoot))
+                        continue;
+
+                    var imageFiles = FindListingImages(exportRoot, sku);
+                    if (imageFiles.Count == 0)
+                    {
+                        Log($"  {sku}: listing_images 없음 (엑셀 URL fallback)");
+                        continue;
+                    }
+
+                    sourceImages = imageFiles.Take(9).ToList();
+                    sourceLabel = "listing_images";
                 }
 
+                if (sourceImages.Count == 0)
+                    continue;
+
                 var uploadedUrls = new List<string>();
-                foreach (var imgPath in imageFiles.Take(10))
+                foreach (var imageSource in sourceImages)
                 {
                     try
                     {
-                        var cdnUrl = await naverApi.UploadImageAsync(imgPath, ct);
+                        var cdnUrl = await UploadImageWithRetryAsync(naverApi, imageSource, Log, ct);
                         uploadedUrls.Add(cdnUrl);
+                        await Task.Delay(300, ct);
                     }
-                    catch { /* 개별 실패 무시 */ }
+                    catch (Exception imageEx)
+                    {
+                        Log($"  {sku}: 이미지 업로드 실패: {ShortImageLabel(imageSource)} | {ShortError(imageEx.Message)}");
+                    }
                 }
 
                 if (uploadedUrls.Count > 0)
                 {
                     row["_cafe24_image_urls"] = uploadedUrls;
-                    Log($"  {sku}: 가공이미지 {uploadedUrls.Count}장 업로드 완료");
+                    Log($"  {sku}: {sourceLabel} -> 네이버 CDN {uploadedUrls.Count}장");
                 }
             }
         }
@@ -267,7 +295,7 @@ public sealed class CoupangUploadService
             var catName = (string)row["_category_name"]!;
             var catMeta = (JsonElement)row["_category_meta"]!;
 
-            var productJson = CoupangProductBuilder.BuildProduct(row, catCode, catMeta, api.VendorId);
+            var productJson = CoupangProductBuilder.BuildProduct(row, catCode, catMeta, api.VendorId, deliveryTemplate);
             var shortName = GetStr(row, "상품명");
             if (shortName.Length > 50) shortName = shortName[..50];
             products.Add(((int)row["_row_num"]!, shortName, $"[{catCode}] {catName}", productJson));
@@ -459,5 +487,116 @@ public sealed class CoupangUploadService
         }
 
         return new List<string>();
+    }
+    private static async Task<string> UploadImageWithRetryAsync(
+        NaverCommerceApiClient api,
+        string imageUrl,
+        Action<string> log,
+        CancellationToken ct)
+    {
+        var delayMs = 1200;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await api.UploadImageAsync(imageUrl, ct);
+            }
+            catch (Exception ex) when (attempt < 4 && IsRateLimitError(ex))
+            {
+                log($"    이미지 업로드 재시도({attempt}/3): {ShortImageLabel(imageUrl)} | {delayMs}ms 대기");
+                await Task.Delay(delayMs, ct);
+                delayMs *= 2;
+            }
+        }
+    }
+
+    private static bool IsRateLimitError(Exception ex)
+    {
+        var message = ex.Message ?? string.Empty;
+        return message.Contains("GW.RATE_LIMIT", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("요청이 많아", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ShortImageLabel(string imageSource)
+    {
+        if (string.IsNullOrWhiteSpace(imageSource))
+            return "(빈 이미지)";
+
+        if (Uri.TryCreate(imageSource, UriKind.Absolute, out var uri))
+        {
+            var fileName = System.IO.Path.GetFileName(uri.LocalPath);
+            return string.IsNullOrWhiteSpace(fileName) ? uri.Host : fileName;
+        }
+
+        return System.IO.Path.GetFileName(imageSource);
+    }
+
+    private static async Task<JsonObject?> LoadReferenceDeliveryTemplateAsync(
+        CoupangApiClient api,
+        Action<string> log,
+        CancellationToken ct)
+    {
+        if (api.ReferenceSellerProductId is not long sellerProductId)
+            return null;
+
+        try
+        {
+            using var doc = await api.GetProductAsync(sellerProductId, ct);
+            var template = ExtractDeliveryTemplate(doc.RootElement);
+            if (template is not null)
+                log($"쿠팡 배송 기준상품 로드: {sellerProductId}");
+            else
+                log($"쿠팡 배송 기준상품 로드 실패: {sellerProductId} (배송 필드 없음)");
+            return template;
+        }
+        catch (Exception ex)
+        {
+            log($"쿠팡 배송 기준상품 로드 실패: {sellerProductId} | {ShortError(ex.Message)}");
+            return null;
+        }
+    }
+
+    private static JsonObject? ExtractDeliveryTemplate(JsonElement root)
+    {
+        if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object)
+            root = data;
+
+        var template = new JsonObject();
+        foreach (var key in new[]
+        {
+            "deliveryMethod",
+            "deliveryCompanyCode",
+            "deliveryChargeType",
+            "deliveryCharge",
+            "freeShipOverAmount",
+            "deliveryChargeOnReturn",
+            "returnCharge",
+            "outboundShippingPlaceCode",
+            "returnCenterCode",
+            "returnChargeName",
+            "companyContactNumber",
+            "returnZipCode",
+            "returnAddress",
+            "returnAddressDetail",
+            "remoteAreaDeliverable",
+            "unionDeliveryType",
+            "vendorUserId",
+            "afterServiceInformation",
+            "afterServiceContactNumber"
+        })
+        {
+            if (root.TryGetProperty(key, out var value))
+                template[key] = JsonNode.Parse(value.GetRawText());
+        }
+
+        return template.Count > 0 ? template : null;
+    }
+
+    private static string ShortError(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return "알 수 없는 오류";
+
+        return message.Length > 140 ? message[..140] + "..." : message;
     }
 }

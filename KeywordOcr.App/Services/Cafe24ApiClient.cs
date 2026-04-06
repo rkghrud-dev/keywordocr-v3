@@ -271,7 +271,8 @@ internal sealed class Cafe24ApiClient
                 }
             }
 
-            variants.Add(new Cafe24Variant(variantCode, optionValues));
+            var additionalAmount = GetDecimal(item, "additional_amount");
+            variants.Add(new Cafe24Variant(variantCode, optionValues, additionalAmount));
         }
 
         return variants;
@@ -559,6 +560,39 @@ internal sealed class Cafe24ApiClient
         return (detailImage, additionalImages);
     }
 
+
+    public async Task<Cafe24ProductSnapshot?> GetProductSnapshotAsync(
+        Cafe24TokenConfig config,
+        int productNo,
+        CancellationToken cancellationToken)
+    {
+        var url = $"https://{config.MallId}.cafe24api.com/api/v2/admin/products/{productNo}?shop_no={Uri.EscapeDataString(config.ShopNo)}";
+        using var request = CreateRequest(HttpMethod.Get, url, config);
+        using var document = await SendJsonAsync(request, cancellationToken);
+
+        if (!document.RootElement.TryGetProperty("product", out var product) || product.ValueKind != JsonValueKind.Object)
+            return null;
+
+        var productName = GetString(product, "product_name");
+        var customProductCode = GetString(product, "custom_product_code");
+        var descriptionHtml = GetFirstNonEmpty(product, "description", "mobile_description", "simple_description", "summary_description");
+        var representativeImageUrl = GetFirstNonEmpty(product, "detail_image", "list_image", "tiny_image");
+
+        var images = await GetProductImageUrlsAsync(config, productNo, cancellationToken);
+        var variants = await GetVariantsAsync(config, productNo, cancellationToken);
+
+        if (!string.IsNullOrWhiteSpace(images.DetailImage))
+            representativeImageUrl = images.DetailImage;
+
+        return new Cafe24ProductSnapshot(
+            productNo,
+            productName,
+            customProductCode,
+            descriptionHtml,
+            representativeImageUrl,
+            images.AdditionalImages,
+            variants);
+    }
     private static int GetInt(JsonElement element, string propertyName)
     {
         if (!element.TryGetProperty(propertyName, out var value))
@@ -577,5 +611,47 @@ internal sealed class Cafe24ApiClient
         }
 
         return 0;
+    }
+
+    private static decimal GetDecimal(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var value))
+        {
+            return 0m;
+        }
+
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetDecimal(out var number))
+        {
+            return number;
+        }
+
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            var raw = value.GetString();
+            if (decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed))
+            {
+                return parsed;
+            }
+            if (decimal.TryParse(raw, NumberStyles.Any, CultureInfo.CurrentCulture, out parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return 0m;
+    }
+
+    private static string GetFirstNonEmpty(JsonElement element, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            var value = GetString(element, propertyName);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return string.Empty;
     }
 }

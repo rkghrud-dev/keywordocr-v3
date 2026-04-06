@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace KeywordOcr.App.Services;
 
@@ -87,9 +89,50 @@ public sealed class Cafe24UploadOptions
 
 internal sealed record Cafe24Product(int ProductNo, string ProductName, string CustomProductCode);
 
-internal sealed record Cafe24Variant(string VariantCode, IReadOnlyList<string> OptionValues)
+internal sealed record Cafe24Variant(string VariantCode, IReadOnlyList<string> OptionValues, decimal AdditionalAmount = 0m)
 {
     public string OptionSummary => string.Join(" / ", OptionValues);
+}
+
+internal sealed record Cafe24ProductSnapshot(
+    int ProductNo,
+    string ProductName,
+    string CustomProductCode,
+    string DescriptionHtml,
+    string? RepresentativeImageUrl,
+    IReadOnlyList<string> AdditionalImageUrls,
+    IReadOnlyList<Cafe24Variant> Variants)
+{
+    public IReadOnlyList<string> ListingImageUrls => BuildListingImageUrls();
+
+    private IReadOnlyList<string> BuildListingImageUrls()
+    {
+        var urls = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (!string.IsNullOrWhiteSpace(RepresentativeImageUrl) && seen.Add(RepresentativeImageUrl))
+            urls.Add(RepresentativeImageUrl);
+
+        foreach (var url in AdditionalImageUrls)
+        {
+            if (!string.IsNullOrWhiteSpace(url) && seen.Add(url))
+                urls.Add(url);
+        }
+
+        if (urls.Count <= 1 && !string.IsNullOrWhiteSpace(DescriptionHtml))
+        {
+            foreach (Match match in Regex.Matches(DescriptionHtml, @"<img[^>]+src=[""']([^""']+)", RegexOptions.IgnoreCase))
+            {
+                var imgUrl = match.Groups[1].Value.Trim();
+                if (!string.IsNullOrWhiteSpace(imgUrl) && seen.Add(imgUrl))
+                    urls.Add(imgUrl);
+                if (urls.Count >= 9)
+                    break;
+            }
+        }
+
+        return urls;
+    }
 }
 
 internal sealed record OptionSupplyItem(string Suffix, decimal SupplyPrice);

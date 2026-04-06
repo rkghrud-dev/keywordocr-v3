@@ -66,7 +66,8 @@ public static class CoupangProductBuilder
         Dictionary<string, object?> row,
         long categoryCode,
         JsonElement categoryMeta,
-        string vendorId)
+        string vendorId,
+        JsonObject? deliveryTemplate = null)
     {
         var productName = GetStr(row, "상품명")
             .OrIfEmpty(GetStr(row, "최종키워드2차"))
@@ -182,7 +183,7 @@ public static class CoupangProductBuilder
                 noticeContent, baseAttributes, images, tagList, detailImageUrls));
         }
 
-        return new JsonObject
+        var product = new JsonObject
         {
             ["displayCategoryCode"] = categoryCode,
             ["sellerProductName"] = sellerProductName,
@@ -193,6 +194,31 @@ public static class CoupangProductBuilder
             ["brand"] = brand,
             ["generalProductName"] = generalName,
             ["productGroup"] = "",
+            ["requested"] = true,
+            ["items"] = items,
+            ["requiredDocuments"] = new JsonArray(),
+            ["extraInfoMessage"] = "",
+            ["manufacture"] = "",
+        };
+
+        ApplyDeliveryTemplate(product, deliveryTemplate);
+        return product;
+    }
+
+    private static void ApplyDeliveryTemplate(JsonObject product, JsonObject? deliveryTemplate)
+    {
+        var source = deliveryTemplate ?? BuildDefaultDeliveryTemplate();
+        foreach (var kvp in source)
+            product[kvp.Key] = kvp.Value?.DeepClone();
+
+        product["deliveryCompanyCode"] = "CJGLS";
+        product["remoteAreaDeliverable"] = "Y";
+    }
+
+    private static JsonObject BuildDefaultDeliveryTemplate()
+    {
+        return new JsonObject
+        {
             ["deliveryMethod"] = "SEQUENCIAL",
             ["deliveryCompanyCode"] = "CJGLS",
             ["deliveryChargeType"] = "FREE",
@@ -212,14 +238,8 @@ public static class CoupangProductBuilder
             ["vendorUserId"] = "rkghrud",
             ["afterServiceInformation"] = "010-2324-8352",
             ["afterServiceContactNumber"] = "010-2324-8352",
-            ["requested"] = true,
-            ["items"] = items,
-            ["requiredDocuments"] = new JsonArray(),
-            ["extraInfoMessage"] = "",
-            ["manufacture"] = "",
         };
     }
-
     // ── 내부 헬퍼 ──────────────────────────────────
 
     private static JsonObject MakeItem(
@@ -302,12 +322,13 @@ public static class CoupangProductBuilder
         var urls = new List<string>();
         var seen = new HashSet<string>();
 
-        // "이미지등록(목록)"만 사용 — 대표이미지 + 추가이미지
-        // "이미지등록(상세)"는 상세페이지 HTML용이므로 여기에 넣지 않음
-        var val = GetStr(row, "이미지등록(목록)");
-        if (!string.IsNullOrEmpty(val))
+        foreach (var column in new[] { "이미지등록(목록)", "이미지등록(추가)" })
         {
-            foreach (var u in Regex.Split(val, @"[|\n]"))
+            var val = GetStr(row, column);
+            if (string.IsNullOrEmpty(val))
+                continue;
+
+            foreach (var u in Regex.Split(val, @"[|\n]+"))
             {
                 var trimmed = u.Trim();
                 if (!string.IsNullOrEmpty(trimmed) && seen.Add(trimmed))
@@ -315,6 +336,7 @@ public static class CoupangProductBuilder
             }
         }
 
+        // 목록/추가 이미지가 없으면 상세이미지 첫 1장을 대표이미지로 fallback
         // 목록 이미지가 없으면 상세이미지 첫 1장을 대표이미지로 fallback
         if (urls.Count == 0)
         {
@@ -446,6 +468,15 @@ public static class CoupangProductBuilder
     {
         if (!categoryMeta.TryGetProperty("data", out var data)) return "옵션";
         if (!data.TryGetProperty("attributes", out var attrs)) return "옵션";
+
+        foreach (var a in attrs.EnumerateArray())
+        {
+            var name = a.TryGetProperty("attributeTypeName", out var nameProp)
+                ? nameProp.GetString()
+                : null;
+            if (string.Equals(name, "옵션", StringComparison.OrdinalIgnoreCase))
+                return "옵션";
+        }
 
         foreach (var a in attrs.EnumerateArray())
         {

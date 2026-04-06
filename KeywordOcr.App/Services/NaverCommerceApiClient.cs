@@ -22,14 +22,25 @@ public sealed class NaverCommerceApiClient : IDisposable
     private readonly string _clientId;
     private readonly string _clientSecret;
     private readonly HttpClient _http;
+    private readonly long? _referenceOriginProductNo;
+    private readonly long? _referenceChannelProductNo;
 
     private string? _cachedToken;
     private DateTime _tokenExpiry = DateTime.MinValue;
 
-    public NaverCommerceApiClient(string clientId, string clientSecret)
+    public long? ReferenceOriginProductNo => _referenceOriginProductNo;
+    public long? ReferenceChannelProductNo => _referenceChannelProductNo;
+
+    public NaverCommerceApiClient(
+        string clientId,
+        string clientSecret,
+        long? referenceOriginProductNo = null,
+        long? referenceChannelProductNo = null)
     {
         _clientId = clientId;
         _clientSecret = clientSecret;
+        _referenceOriginProductNo = referenceOriginProductNo;
+        _referenceChannelProductNo = referenceChannelProductNo;
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
     }
 
@@ -54,11 +65,21 @@ public sealed class NaverCommerceApiClient : IDisposable
 
         var clientId = kv.GetValueOrDefault("NAVER_COMMERCE_CLIENT_ID", "");
         var clientSecret = kv.GetValueOrDefault("NAVER_COMMERCE_CLIENT_SECRET", "");
+        var referenceOriginProductNo = ParseOptionalLong(kv.GetValueOrDefault("NAVER_REFERENCE_ORIGIN_PRODUCT_NO", ""));
+        var referenceChannelProductNo = ParseOptionalLong(kv.GetValueOrDefault("NAVER_REFERENCE_CHANNEL_PRODUCT_NO", ""));
 
         if (string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(clientSecret))
             throw new InvalidOperationException($"네이버 커머스 API 키를 찾을 수 없습니다: {keyFile}");
 
-        return new NaverCommerceApiClient(clientId, clientSecret);
+        return new NaverCommerceApiClient(clientId, clientSecret, referenceOriginProductNo, referenceChannelProductNo);
+    }
+
+    private static long? ParseOptionalLong(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+
+        return long.TryParse(raw.Trim(), out var value) ? value : null;
     }
 
     // ── 인증 ───────────────────────────────────────
@@ -133,7 +154,6 @@ public sealed class NaverCommerceApiClient : IDisposable
     /// <summary>상품모델 검색으로 카테고리 추천</summary>
     public async Task<JsonDocument> PredictCategoryAsync(string productName, CancellationToken ct = default)
     {
-        // 상품명 정제
         var clean = System.Text.RegularExpressions.Regex.Replace(productName, @"[A-Z]{1,2}\d{5,}[A-Z]?", "").Trim();
         clean = System.Text.RegularExpressions.Regex.Replace(clean, @"\d+(\.\d+)?\s*(cm|mm|m|g|kg|ml|L|개|매|장|ea)", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
         clean = System.Text.RegularExpressions.Regex.Replace(clean, @"\s+", " ").Trim();
@@ -141,6 +161,18 @@ public sealed class NaverCommerceApiClient : IDisposable
 
         var query = $"name={Uri.EscapeDataString(clean)}";
         return await CallAsync("GET", "/v1/product-models", query: query, ct: ct);
+    }
+
+    /// <summary>기준 원상품 조회</summary>
+    public async Task<JsonDocument> GetOriginProductAsync(long originProductNo, CancellationToken ct = default)
+    {
+        return await CallAsync("GET", $"/v2/products/origin-products/{originProductNo}", ct: ct);
+    }
+
+    /// <summary>기준 채널상품 조회</summary>
+    public async Task<JsonDocument> GetChannelProductAsync(long channelProductNo, CancellationToken ct = default)
+    {
+        return await CallAsync("GET", $"/v2/products/channel-products/{channelProductNo}", ct: ct);
     }
 
     /// <summary>이미지 업로드 (로컬 파일 또는 URL)</summary>
@@ -163,7 +195,6 @@ public sealed class NaverCommerceApiClient : IDisposable
             if (string.IsNullOrEmpty(fileName)) fileName = "image.jpg";
         }
 
-        // MIME 감지
         var mime = "image/jpeg";
         if (imageData.Length >= 8)
         {
@@ -172,7 +203,6 @@ public sealed class NaverCommerceApiClient : IDisposable
             else if (imageData[0] == 0x42 && imageData[1] == 0x4D) mime = "image/bmp";
         }
 
-        // 확장자 맞추기
         var ext = mime switch
         {
             "image/png" => ".png",

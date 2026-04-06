@@ -69,6 +69,8 @@ public sealed class NaverUploadService
 
         Log($"처리 대상: {targetRows.Count}개");
         var results = new List<NaverUploadResultItem>();
+        var referenceDeliveryInfo = await LoadReferenceDeliveryInfoAsync(api, Log, ct);
+        var cafe24MarketData = await Cafe24MarketDataService.TryCreateAsync(sourcePath, Log, ct);
 
         for (int idx = 0; idx < targetRows.Count; idx++)
         {
@@ -137,15 +139,38 @@ public sealed class NaverUploadService
             // 실제 등록
             try
             {
-                // 이미지: listing_images 가공이미지 우선, 없으면 엑셀 URL fallback
+                if (cafe24MarketData is not null)
+                    await cafe24MarketData.TryApplyAsync(row, ct);
+
+                // 이미지: Cafe24 상품 이미지 우선, 없으면 listing_images, 마지막으로 엑셀 URL fallback
+                var cafe24Images = GetCafe24ImageUrls(row);
+                // listing_images 가공이미지 fallback
                 var exportRoot = GetStr(row, "_export_root");
                 var sku = GetStr(row, "자체 상품코드");
                 var listingImages = !string.IsNullOrEmpty(exportRoot) && !string.IsNullOrEmpty(sku)
                     ? FindListingImages(exportRoot, sku)
                     : new List<string>();
 
-                var imageUrls = listingImages.Count > 0 ? listingImages : CollectImageUrls(row);
+                List<string> imageUrls;
+                string imageSource;
+                if (cafe24Images.Count > 0)
+                {
+                    imageUrls = cafe24Images;
+                    imageSource = "Cafe24";
+                }
+                else if (listingImages.Count > 0)
+                {
+                    imageUrls = listingImages;
+                    imageSource = "listing_images";
+                }
+                else
+                {
+                    imageUrls = CollectImageUrls(row);
+                    imageSource = "엑셀 fallback";
+                }
                 JsonObject? imagesNode = null;
+
+                Log($"  이미지 소스: {imageSource} ({imageUrls.Count}장)");
 
                 if (imageUrls.Count > 0)
                 {
@@ -154,10 +179,14 @@ public sealed class NaverUploadService
                     {
                         try
                         {
-                            var uploaded = await api.UploadImageAsync(imgUrl, ct);
+                            var uploaded = await UploadImageWithRetryAsync(api, imgUrl, Log, ct);
                             uploadedUrls.Add(uploaded);
+                            await Task.Delay(300, ct);
                         }
-                        catch { /* skip failed images */ }
+                        catch (Exception imageEx)
+                        {
+                            Log($"    이미지 업로드 실패: {ShortImageLabel(imgUrl)} | {ShortError(imageEx.Message)}");
+                        }
                     }
 
                     if (uploadedUrls.Count > 0)
@@ -173,10 +202,18 @@ public sealed class NaverUploadService
                                 optImages.Add(new JsonObject { ["url"] = u });
                             imagesNode["optionalImages"] = optImages;
                         }
+
+                        Log($"  대표+추가 이미지 반영: {uploadedUrls.Count}장");
                     }
                 }
 
-                var productJson = BuildNaverProduct(row, categoryId, imagesNode);
+                var optionCount = ParseOptions(GetStr(row, "옵션입력"), GetStr(row, "옵션추가금")).Count;
+                if (optionCount == 1)
+                    Log("  단일 옵션 1개만 감지됨. 네이버 상세에서는 선택형 옵션 UI가 보이지 않을 수 있습니다.");
+                else if (optionCount > 1)
+                    Log($"  옵션 조합 {optionCount}개 감지");
+
+                var productJson = BuildNaverProduct(row, categoryId, imagesNode, referenceDeliveryInfo);
                 var productElement = JsonSerializer.Deserialize<JsonElement>(productJson.ToJsonString());
                 using var resp = await api.CreateProductAsync(productElement, ct);
                 var respRoot = resp.RootElement;
@@ -235,7 +272,7 @@ public sealed class NaverUploadService
     // ── 상품 JSON 빌드 ─────────────────────────────
 
     private static JsonObject BuildNaverProduct(
-        Dictionary<string, object?> row, string categoryId, JsonObject? images)
+        Dictionary<string, object?> row, string categoryId, JsonObject? images, JsonObject? referenceDeliveryInfo)
     {
         var productName = GetStr(row, "상품명")
             .OrIfEmpty(GetStr(row, "최종키워드2차"))
@@ -278,28 +315,13 @@ public sealed class NaverUploadService
             ["detailContent"] = detailHtml,
             ["salePrice"] = salePrice,
             ["stockQuantity"] = 999,
-            ["deliveryInfo"] = new JsonObject
-            {
-                ["deliveryType"] = "DELIVERY",
-                ["deliveryAttributeType"] = "NORMAL",
-                ["deliveryCompany"] = "CJGLS",
-                ["deliveryFee"] = new JsonObject
-                {
-                    ["deliveryFeeType"] = "FREE",
-                    ["baseFee"] = 0,
-                },
-                ["claimDeliveryInfo"] = new JsonObject
-                {
-                    ["returnDeliveryFee"] = 3000,
-                    ["exchangeDeliveryFee"] = 3000,
-                },
-            },
-            ["sellerCodeInfo"] = new JsonObject
-            {
-                ["sellerManagementCode"] = sellerCode,
-            },
+            ["deliveryInfo"] = CloneJsonObject(referenceDeliveryInfo) ?? BuildDefaultDeliveryInfo(),
             ["detailAttribute"] = new JsonObject
             {
+                ["sellerCodeInfo"] = new JsonObject
+                {
+                    ["sellerManagementCode"] = sellerCode,
+                },
                 ["naverShoppingSearchInfo"] = new JsonObject
                 {
                     ["manufacturerName"] = "상세페이지 참조",
@@ -344,8 +366,11 @@ public sealed class NaverUploadService
         if (images is not null)
             originProduct["images"] = images;
 
+        if (originProduct["deliveryInfo"] is JsonObject deliveryInfo)
+            deliveryInfo["deliveryCompany"] = "CJGLS";
+
         // 옵션 설정
-        if (options.Count > 0)
+        if (options.Count > 0 && originProduct["detailAttribute"] is JsonObject detailAttribute)
         {
             var optionCombinations = new JsonArray();
             foreach (var opt in options)
@@ -358,7 +383,7 @@ public sealed class NaverUploadService
                     ["usable"] = true,
                 });
             }
-            originProduct["optionInfo"] = new JsonObject
+            detailAttribute["optionInfo"] = new JsonObject
             {
                 ["optionCombinationSortType"] = "CREATE",
                 ["optionCombinationGroupNames"] = new JsonObject
@@ -366,6 +391,7 @@ public sealed class NaverUploadService
                     ["optionGroupName1"] = "옵션",
                 },
                 ["optionCombinations"] = optionCombinations,
+                ["useStockManagement"] = true,
             };
         }
 
@@ -379,6 +405,35 @@ public sealed class NaverUploadService
                 ["naverShoppingRegistration"] = true,
             },
         };
+    }
+
+    private static async Task<string> UploadImageWithRetryAsync(
+        NaverCommerceApiClient api,
+        string imageUrl,
+        Action<string> log,
+        CancellationToken ct)
+    {
+        var delayMs = 1200;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await api.UploadImageAsync(imageUrl, ct);
+            }
+            catch (Exception ex) when (attempt < 4 && IsRateLimitError(ex))
+            {
+                log($"    이미지 업로드 재시도({attempt}/3): {ShortImageLabel(imageUrl)} | {delayMs}ms 대기");
+                await Task.Delay(delayMs, ct);
+                delayMs *= 2;
+            }
+        }
+    }
+
+    private static bool IsRateLimitError(Exception ex)
+    {
+        var message = ex.Message ?? string.Empty;
+        return message.Contains("GW.RATE_LIMIT", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("요청이 많아", StringComparison.OrdinalIgnoreCase);
     }
 
     // ── 헬퍼 ───────────────────────────────────────
@@ -411,16 +466,30 @@ public sealed class NaverUploadService
         return options;
     }
 
+    private static List<string> GetCafe24ImageUrls(Dictionary<string, object?> row)
+    {
+        if (!row.TryGetValue("_cafe24_image_urls", out var value) || value is not IEnumerable<string> urls)
+            return new List<string>();
+
+        return urls
+            .Select(u => u?.Trim() ?? string.Empty)
+            .Where(u => !string.IsNullOrWhiteSpace(u))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(9)
+            .ToList();
+    }
+
     private static List<string> CollectImageUrls(Dictionary<string, object?> row)
     {
         var urls = new List<string>();
         var seen = new HashSet<string>();
 
-        // "이미지등록(목록)"만 사용 — 대표이미지 + 추가이미지
-        // "이미지등록(상세)"는 상세페이지 HTML에 이미 포함되어 있으므로 여기선 제외
-        var val = GetStr(row, "이미지등록(목록)");
-        if (!string.IsNullOrEmpty(val))
+        foreach (var column in new[] { "이미지등록(목록)", "이미지등록(추가)" })
         {
+            var val = GetStr(row, column);
+            if (string.IsNullOrEmpty(val))
+                continue;
+
             foreach (var u in Regex.Split(val, @"[|\n]"))
             {
                 var trimmed = u.Trim();
@@ -429,7 +498,7 @@ public sealed class NaverUploadService
             }
         }
 
-        // 목록 이미지 없으면 상세이미지 첫 1장을 대표이미지 fallback
+        // 목록/추가 이미지 모두 없으면 상세이미지 첫 1장을 대표이미지 fallback
         if (urls.Count == 0)
         {
             var detailVal = GetStr(row, "이미지등록(상세)");
@@ -450,6 +519,125 @@ public sealed class NaverUploadService
         return urls.Take(9).ToList();
     }
 
+    private static string ShortImageLabel(string imageUrl)
+    {
+        if (string.IsNullOrWhiteSpace(imageUrl))
+            return "(empty)";
+
+        if (System.IO.File.Exists(imageUrl))
+            return System.IO.Path.GetFileName(imageUrl);
+
+        return imageUrl.Length > 80 ? imageUrl[..80] + "..." : imageUrl;
+    }
+
+    private static string ShortError(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return "알 수 없는 오류";
+
+        return message.Length > 140 ? message[..140] + "..." : message;
+    }
+
+    private static async Task<JsonObject?> LoadReferenceDeliveryInfoAsync(
+        NaverCommerceApiClient api,
+        Action<string> log,
+        CancellationToken ct)
+    {
+        if (api.ReferenceChannelProductNo is long channelProductNo)
+        {
+            try
+            {
+                using var doc = await api.GetChannelProductAsync(channelProductNo, ct);
+                var deliveryInfo = ExtractReferenceDeliveryInfo(doc.RootElement);
+                if (deliveryInfo is not null)
+                    log($"네이버 배송 기준 채널상품 로드: {channelProductNo}");
+                else
+                    log($"네이버 배송 기준 채널상품 로드 실패: {channelProductNo} (deliveryInfo 없음)");
+                return deliveryInfo;
+            }
+            catch (Exception ex)
+            {
+                log($"네이버 배송 기준 채널상품 로드 실패: {channelProductNo} | {ShortError(ex.Message)}");
+                return null;
+            }
+        }
+
+        if (api.ReferenceOriginProductNo is not long originProductNo)
+            return null;
+
+        try
+        {
+            using var doc = await api.GetOriginProductAsync(originProductNo, ct);
+            var deliveryInfo = ExtractReferenceDeliveryInfo(doc.RootElement);
+            if (deliveryInfo is not null)
+                log($"네이버 배송 기준 원상품 로드: {originProductNo}");
+            else
+                log($"네이버 배송 기준 원상품 로드 실패: {originProductNo} (deliveryInfo 없음)");
+            return deliveryInfo;
+        }
+        catch (Exception ex)
+        {
+            log($"네이버 배송 기준 원상품 로드 실패: {originProductNo} | {ShortError(ex.Message)}");
+            return null;
+        }
+    }
+
+    private static JsonObject? ExtractReferenceDeliveryInfo(JsonElement root)
+    {
+        if (TryParseDeliveryInfo(root, out var direct))
+            return direct;
+
+        if (root.TryGetProperty("originProduct", out var originProduct) && TryParseDeliveryInfo(originProduct, out var nested))
+            return nested;
+
+        if (root.TryGetProperty("data", out var data) && TryParseDeliveryInfo(data, out var dataNode))
+            return dataNode;
+
+        if (root.TryGetProperty("data", out data)
+            && data.TryGetProperty("originProduct", out var dataOrigin)
+            && TryParseDeliveryInfo(dataOrigin, out var dataNested))
+            return dataNested;
+
+        return null;
+    }
+
+    private static bool TryParseDeliveryInfo(JsonElement element, out JsonObject? deliveryInfo)
+    {
+        if (element.TryGetProperty("deliveryInfo", out var deliveryElement)
+            && deliveryElement.ValueKind == JsonValueKind.Object)
+        {
+            deliveryInfo = JsonNode.Parse(deliveryElement.GetRawText()) as JsonObject;
+            return deliveryInfo is not null;
+        }
+
+        deliveryInfo = null;
+        return false;
+    }
+
+    private static JsonObject BuildDefaultDeliveryInfo()
+    {
+        return new JsonObject
+        {
+            ["deliveryType"] = "DELIVERY",
+            ["deliveryAttributeType"] = "NORMAL",
+            ["deliveryCompany"] = "CJGLS",
+            ["deliveryFee"] = new JsonObject
+            {
+                ["deliveryFeeType"] = "FREE",
+                ["baseFee"] = 0,
+            },
+            ["claimDeliveryInfo"] = new JsonObject
+            {
+                ["returnDeliveryFee"] = 3000,
+                ["exchangeDeliveryFee"] = 3000,
+            },
+        };
+    }
+
+    private static JsonObject? CloneJsonObject(JsonObject? source)
+    {
+        return source is null ? null : JsonNode.Parse(source.ToJsonString()) as JsonObject;
+    }
     private static string SanitizeTag(string tag)
     {
         var cleaned = Regex.Replace(tag, @"[^0-9A-Za-z가-힣\s]", "");
