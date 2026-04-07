@@ -36,6 +36,7 @@ public sealed class Cafe24UploadService
         ValidateTokenConfig(tokenState.Config);
         var workingDirectory = Cafe24UploadSupport.ResolveWorkingDirectory(sourcePath, exportRoot, options);
         progress?.Report($"작업 폴더: {workingDirectory}");
+        progress?.Report($"대상 몰: {tokenState.Config.MallId}");
 
         var uploadWorkbookPath = Cafe24UploadSupport.FindLatestFileInDirectory(workingDirectory, "업로드용_*.xlsx");
         if (uploadWorkbookPath is null)
@@ -253,6 +254,7 @@ public sealed class Cafe24UploadService
 
         var workingDirectory = Cafe24UploadSupport.ResolveWorkingDirectory(sourcePath, exportRoot, options);
         progress?.Report($"[B마켓] 작업 폴더: {workingDirectory}");
+        progress?.Report($"[B마켓] 대상 몰: {tokenState.Config.MallId}");
 
         var uploadWorkbookPath = Cafe24UploadSupport.FindLatestFileInDirectory(workingDirectory, "업로드용_*.xlsx");
         if (uploadWorkbookPath is null)
@@ -263,8 +265,13 @@ public sealed class Cafe24UploadService
 
         var keywordSourcePath = File.Exists(sourcePath) && sourcePath.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)
             ? sourcePath : uploadWorkbookPath;
-        var keywordData = Cafe24UploadSupport.ReadProductKeywordData(keywordSourcePath, "B마켓");
-        var uploadNames = Cafe24UploadSupport.ReadUploadProductNames(uploadWorkbookPath);
+        var uploadNames = Cafe24UploadSupport.ReadUploadProductNames(keywordSourcePath, "B마켓", allowDefaultFallback: false);
+        if (uploadNames.Count == 0)
+        {
+            progress?.Report("[B마켓] B마켓 시트를 찾지 못했거나 업로드할 상품명이 없습니다.");
+            return new Cafe24UploadResult(workingDirectory, uploadWorkbookPath, "", 0, 0, 0, 0);
+        }
+        var keywordData = Cafe24UploadSupport.ReadProductKeywordData(keywordSourcePath, "B마켓", allowDefaultFallback: false);
         var gptWorkbookPath = Cafe24UploadSupport.FindLatestFileInDirectory(workingDirectory, "상품전처리GPT_*.xlsx");
         var optionPriceMap = Cafe24UploadSupport.LoadOptionSupplyPrices(gptWorkbookPath ?? uploadWorkbookPath);
         var priceReview = Cafe24UploadSupport.LoadPriceReview(options.PriceDataPath);

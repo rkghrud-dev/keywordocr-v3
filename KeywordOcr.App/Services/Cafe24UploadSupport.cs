@@ -16,6 +16,43 @@ internal static class Cafe24UploadSupport
     private static readonly Regex GsCodeRegex = new(@"(GS\d{7}[A-Z0-9]*)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly string[] ImageExtensions = { ".jpg", ".jpeg", ".png", ".webp", ".bmp" };
 
+    public static IXLWorksheet? ResolveWorksheet(
+        IXLWorkbook workbook,
+        IEnumerable<string> preferredSheetNames,
+        bool allowDefaultFallback = true)
+    {
+        var preferredNames = preferredSheetNames
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        foreach (var preferredName in preferredNames)
+        {
+            var matchedWorksheet = workbook.Worksheets
+                .FirstOrDefault(worksheet => string.Equals(
+                    worksheet.Name.Trim(),
+                    preferredName,
+                    StringComparison.OrdinalIgnoreCase));
+            if (matchedWorksheet is not null)
+            {
+                return matchedWorksheet;
+            }
+        }
+
+        if (!allowDefaultFallback)
+        {
+            return null;
+        }
+
+        return workbook.Worksheets
+            .FirstOrDefault(worksheet => string.Equals(
+                worksheet.Name.Trim(),
+                "분리추출후",
+                StringComparison.OrdinalIgnoreCase))
+            ?? workbook.Worksheets.FirstOrDefault();
+    }
+
     public static string ResolveWorkingDirectory(string sourcePath, string exportRoot, Cafe24UploadOptions options)
     {
         var searchRoots = new List<string>();
@@ -115,13 +152,19 @@ internal static class Cafe24UploadSupport
     }
 
     /// <summary>GS코드 → (상품명, 검색어설정, 검색키워드) 매핑을 엑셀에서 읽어옵니다.</summary>
-    public static Dictionary<string, (string ProductName, string ProductTag, string SearchKeyword)> ReadProductKeywordData(string workbookPath, string sheetName = "분리추출후")
+    public static Dictionary<string, (string ProductName, string ProductTag, string SearchKeyword)> ReadProductKeywordData(
+        string workbookPath,
+        string sheetName = "분리추출후",
+        bool allowDefaultFallback = true)
     {
         var result = new Dictionary<string, (string, string, string)>(StringComparer.OrdinalIgnoreCase);
         using var workbook = WorkbookFileLoader.OpenReadOnly(workbookPath);
-        var worksheet = workbook.Worksheets.Contains(sheetName) ? workbook.Worksheet(sheetName)
-            : workbook.Worksheets.Contains("분리추출후") ? workbook.Worksheet("분리추출후")
-            : workbook.Worksheet(1);
+        var worksheet = ResolveWorksheet(workbook, new[] { sheetName }, allowDefaultFallback);
+        if (worksheet is null)
+        {
+            return result;
+        }
+
         var headers = BuildHeaderMap(worksheet);
 
         if (!headers.TryGetValue("상품명", out var nameCol)) return result;
@@ -157,10 +200,18 @@ internal static class Cafe24UploadSupport
         return result;
     }
 
-    public static List<string> ReadUploadProductNames(string workbookPath)
+    public static List<string> ReadUploadProductNames(
+        string workbookPath,
+        string sheetName = "분리추출후",
+        bool allowDefaultFallback = true)
     {
         using var workbook = WorkbookFileLoader.OpenReadOnly(workbookPath);
-        var worksheet = workbook.Worksheets.Contains("분리추출후") ? workbook.Worksheet("분리추출후") : workbook.Worksheet(1);
+        var worksheet = ResolveWorksheet(workbook, new[] { sheetName }, allowDefaultFallback);
+        if (worksheet is null)
+        {
+            return new List<string>();
+        }
+
         var headers = BuildHeaderMap(worksheet);
         if (!headers.TryGetValue("상품명", out var productNameColumn))
         {

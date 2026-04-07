@@ -338,6 +338,20 @@
                                 <DataGridTextColumn Header="진행" Binding="{Binding DisplayProgress}" Width="180"/>
                                 <DataGridTextColumn Header="메모" Binding="{Binding Memo}" Width="120"/>
                             </DataGrid.Columns>
+                        <StackPanel Orientation="Horizontal" Margin="0,6,0,4">
+                            <TextBlock Text="업로드 대상:" FontSize="11" Foreground="#666" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <CheckBox x:Name="TestCafe24HomeCheckBox"
+                                      Content="홈런마켓"
+                                      IsChecked="True"
+                                      Checked="Cafe24MarketTargetCheck_Changed"
+                                      Unchecked="Cafe24MarketTargetCheck_Changed"
+                                      Margin="0,0,12,0"/>
+                            <CheckBox x:Name="TestCafe24ReadyCheckBox"
+                                      Content="준비몰"
+                                      IsChecked="True"
+                                      Checked="Cafe24MarketTargetCheck_Changed"
+                                      Unchecked="Cafe24MarketTargetCheck_Changed"/>
+                        </StackPanel>
                         </DataGrid>
                     </Border>
 
@@ -770,6 +784,20 @@
                     </Grid>
 
                     <!-- 하단: 범례 -->
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="업로드 대상:" FontSize="11" Foreground="#666" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <CheckBox x:Name="Cafe24HomeCheckBox"
+                                      Content="홈런마켓"
+                                      IsChecked="True"
+                                      Checked="Cafe24MarketTargetCheck_Changed"
+                                      Unchecked="Cafe24MarketTargetCheck_Changed"
+                                      Margin="0,0,12,0"/>
+                            <CheckBox x:Name="Cafe24ReadyCheckBox"
+                                      Content="준비몰"
+                                      IsChecked="True"
+                                      Checked="Cafe24MarketTargetCheck_Changed"
+                                      Unchecked="Cafe24MarketTargetCheck_Changed"/>
+                        </StackPanel>
                     <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,8,0,0">
                         <Border Width="16" Height="16" BorderBrush="#2196F3" BorderThickness="3"
                                 CornerRadius="2" Margin="0,0,4,0" Background="#E3F2FD"/>

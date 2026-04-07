@@ -41,6 +41,8 @@ public partial class MainWindow : Window
     private string? _imageListingRoot;
     private JobHistoryService? _jobHistory;
     private string _settingsPath = "";
+    private bool _syncingKeywordVersion;
+    private bool _syncingCafe24MarketTargetChecks;
 
     public MainWindow()
     {
@@ -73,6 +75,7 @@ public partial class MainWindow : Window
         Cafe24DateTag.Text = DateTime.Now.ToString("yyyyMMdd");
         LoadTokenInfo();
         LoadAppSettings();
+        SyncCafe24MarketTargetCheckBoxes(true, true);
 
         _jobHistory = new JobHistoryService(_legacyRoot);
         RefreshHistoryGrid();
@@ -82,6 +85,71 @@ public partial class MainWindow : Window
     }
 
     #region ═══ 드래그 앤 드롭 ═══
+
+    private void SyncCafe24MarketTargetCheckBoxes(bool homeSelected, bool readySelected)
+    {
+        _syncingCafe24MarketTargetChecks = true;
+        try
+        {
+            if (Cafe24HomeCheckBox is not null) Cafe24HomeCheckBox.IsChecked = homeSelected;
+            if (TestCafe24HomeCheckBox is not null) TestCafe24HomeCheckBox.IsChecked = homeSelected;
+            if (Cafe24ReadyCheckBox is not null) Cafe24ReadyCheckBox.IsChecked = readySelected;
+            if (TestCafe24ReadyCheckBox is not null) TestCafe24ReadyCheckBox.IsChecked = readySelected;
+        }
+        finally
+        {
+            _syncingCafe24MarketTargetChecks = false;
+        }
+    }
+
+    private void Cafe24MarketTargetCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_syncingCafe24MarketTargetChecks || sender is not CheckBox checkBox)
+        {
+            return;
+        }
+
+        var homeSelected = IsCafe24HomeSelected();
+        var readySelected = IsCafe24ReadySelected();
+
+        if (checkBox == Cafe24HomeCheckBox || checkBox == TestCafe24HomeCheckBox)
+        {
+            homeSelected = checkBox.IsChecked == true;
+        }
+        else if (checkBox == Cafe24ReadyCheckBox || checkBox == TestCafe24ReadyCheckBox)
+        {
+            readySelected = checkBox.IsChecked == true;
+        }
+
+        SyncCafe24MarketTargetCheckBoxes(homeSelected, readySelected);
+    }
+
+    private bool IsCafe24HomeSelected() => Cafe24HomeCheckBox?.IsChecked == true || TestCafe24HomeCheckBox?.IsChecked == true;
+
+    private bool IsCafe24ReadySelected() => Cafe24ReadyCheckBox?.IsChecked == true || TestCafe24ReadyCheckBox?.IsChecked == true;
+
+    private bool TryGetSelectedCafe24Markets(out bool homeSelected, out bool readySelected, out string marketLabel)
+    {
+        homeSelected = IsCafe24HomeSelected();
+        readySelected = IsCafe24ReadySelected();
+        marketLabel = GetSelectedCafe24MarketLabel(homeSelected, readySelected);
+        if (homeSelected || readySelected)
+        {
+            return true;
+        }
+
+        MessageBox.Show("Cafe24 대상 몰을 하나 이상 선택하세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Warning);
+        return false;
+    }
+
+    private static string GetSelectedCafe24MarketLabel(bool homeSelected, bool readySelected)
+    {
+        var markets = new List<string>();
+        if (homeSelected) markets.Add("홈런마켓");
+        if (readySelected) markets.Add("준비몰");
+        return markets.Count == 0 ? "선택 없음" : string.Join(" + ", markets);
+    }
+
 
     private void DropZone_DragEnter(object sender, DragEventArgs e)
     {
@@ -1202,7 +1270,7 @@ public partial class MainWindow : Window
             $"Cafe24에 신규상품을 등록합니다.\n\n" +
             $"LLM 결과 파일: {files.Count}개\n{fileListText}\n" +
             $"결과 폴더: {exportRoot}\n\n" +
-            $"파일을 순차적으로 처리합니다. 계속하시겠습니까?",
+            "파일을 순차적으로 처리합니다. 계속하시겠습니까?",
             "Cafe24 신규등록 확인", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (confirm != MessageBoxResult.Yes) return;
 
@@ -1220,42 +1288,62 @@ public partial class MainWindow : Window
             for (int i = 0; i < files.Count; i++)
             {
                 var file = files[i];
-                StatusText.Text = $"Cafe24 신규등록 중... ({i + 1}/{files.Count}) {Path.GetFileName(file)}";
-                Log($"── 파일 {i + 1}/{files.Count}: {Path.GetFileName(file)} 처리 시작 ──");
 
-                var result = await createService.CreateAsync(
-                    file, exportRoot, progress, _cts.Token);
-
-                totalCreated += result.CreatedCount;
-                totalError += result.ErrorCount;
-                totalSkipped += result.SkippedCount;
-
-                Log($"── 파일 {i + 1} 완료: 등록 {result.CreatedCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount} ──");
-
-                // B마켓 신규등록
-                try
+                async Task RunReadyMarketCreateAsync()
                 {
-                    StatusText.Text = $"B마켓 신규등록 중... ({i + 1}/{files.Count}) {Path.GetFileName(file)}";
-                    Log($"── [B마켓] 파일 {i + 1}/{files.Count}: {Path.GetFileName(file)} 처리 시작 ──");
-                    var resultB = await createService.CreateBMarketAsync(
-                        file, exportRoot, progress, _cts.Token);
+                    StatusText.Text = $"준비몰 신규등록 중... ({i + 1}/{files.Count}) {Path.GetFileName(file)}";
+                    Log($"── [준비몰] 파일 {i + 1}/{files.Count}: {Path.GetFileName(file)} 처리 시작 ──");
+                    var resultB = await createService.CreateBMarketAsync(file, exportRoot, progress, _cts.Token);
+                    totalCreated += resultB.CreatedCount;
+                    totalError += resultB.ErrorCount;
+                    totalSkipped += resultB.SkippedCount;
                     if (resultB.TotalCount > 0)
                     {
-                        Log($"── [B마켓] 파일 {i + 1} 완료: 등록 {resultB.CreatedCount} / 오류 {resultB.ErrorCount} / 스킵 {resultB.SkippedCount} ──");
+                        Log($"── [준비몰] 파일 {i + 1} 완료: 등록 {resultB.CreatedCount} / 오류 {resultB.ErrorCount} / 스킵 {resultB.SkippedCount} ──");
+                    }
+                    else
+                    {
+                        Log($"── [준비몰] 파일 {i + 1} 완료: 등록 대상 없음 ──");
                     }
                 }
-                catch (Cafe24ReauthenticationRequiredException exB)
+
+                if (runHomeMarket)
                 {
-                    Log($"[B마켓] 재인증 필요: {exB.Message}");
+                    StatusText.Text = $"홈런마켓 신규등록 중... ({i + 1}/{files.Count}) {Path.GetFileName(file)}";
+                    Log($"── [홈런마켓] 파일 {i + 1}/{files.Count}: {Path.GetFileName(file)} 처리 시작 ──");
+                    var result = await createService.CreateAsync(file, exportRoot, progress, _cts.Token);
+                    totalCreated += result.CreatedCount;
+                    totalError += result.ErrorCount;
+                    totalSkipped += result.SkippedCount;
+                    Log($"── [홈런마켓] 파일 {i + 1} 완료: 등록 {result.CreatedCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount} ──");
                 }
-                catch (Exception exB)
+
+                if (runReadyMarket)
                 {
-                    Log($"[B마켓] 신규등록 오류: {exB.Message}");
+                    if (runHomeMarket)
+                    {
+                        try
+                        {
+                            await RunReadyMarketCreateAsync();
+                        }
+                        catch (Cafe24ReauthenticationRequiredException exB)
+                        {
+                            Log($"[준비몰] 재인증 필요: {exB.Message}");
+                        }
+                        catch (Exception exB)
+                        {
+                            Log($"[준비몰] 신규등록 오류: {exB.Message}");
+                        }
+                    }
+                    else
+                    {
+                        await RunReadyMarketCreateAsync();
+                    }
                 }
             }
 
-            Log($"전체 신규등록 완료: 등록 {totalCreated} / 오류 {totalError} / 스킵 {totalSkipped} (파일 {files.Count}개)");
-            StatusText.Text = $"신규등록 완료 (등록: {totalCreated}, 파일: {files.Count}개)";
+            Log($"선택한 몰 신규등록 완료: 대상 {marketLabel} / 등록 {totalCreated} / 오류 {totalError} / 스킵 {totalSkipped} (파일 {files.Count}개)");
+            StatusText.Text = $"신규등록 완료 ({marketLabel}, 등록: {totalCreated}, 파일: {files.Count}개)";
         }
         catch (OperationCanceledException) { Log("신규등록 취소됨"); StatusText.Text = "취소됨"; }
         catch (Exception ex)
@@ -1374,6 +1462,11 @@ public partial class MainWindow : Window
             var confirm = MessageBox.Show(
                 $"네이버 스마트스토어에 상품을 실제 등록합니다.\n\n파일: {Path.GetFileName(sourcePath)}\n\n계속하시겠습니까?",
                 "네이버 실제 등록 확인", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (!TryGetSelectedCafe24Markets(out var runHomeMarket, out var runReadyMarket, out var marketLabel))
+        {
+            return;
+        }
+
             if (confirm != MessageBoxResult.Yes) return;
         }
 
@@ -1381,6 +1474,7 @@ public partial class MainWindow : Window
         _cts = new CancellationTokenSource();
 
         try
+            $"대상 몰: {marketLabel}\n" +
         {
             StatusText.Text = dryRun ? "네이버 DRY RUN 중..." : "네이버 등록 중...";
             ProgressBar.IsIndeterminate = true;
@@ -1493,7 +1587,11 @@ public partial class MainWindow : Window
             return;
         }
 
-        // LLM 결과 파일이 지정되어 있으면 그걸 사용, 아니면 최신 업로드용 파일 탐색
+        if (!TryGetSelectedCafe24Markets(out var runHomeMarket, out var runReadyMarket, out var marketLabel))
+        {
+            return;
+        }
+
         var uploadFile = !string.IsNullOrEmpty(_lastOutputFile) && File.Exists(_lastOutputFile)
             ? _lastOutputFile
             : FindLatestFile(_lastOutputRoot, "업로드용_*.xlsx");
@@ -1510,7 +1608,6 @@ public partial class MainWindow : Window
             "Cafe24 업로드 확인", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (confirm != MessageBoxResult.Yes) return;
 
-        // 가격 데이터 저장
         SavePriceReviewJson();
 
         Cafe24UploadButton.IsEnabled = false;
@@ -1529,35 +1626,72 @@ public partial class MainWindow : Window
             var uploadService = new Cafe24UploadService(_v3Root, _legacyRoot);
             var progress = new Progress<string>(msg => Log(msg));
 
-            var result = await uploadService.UploadAsync(
-                uploadFile, _lastOutputRoot, options, progress, _cts.Token);
-
-            _lastUploadLogPath = result.LogPath;
-            Log($"Cafe24 A마켓 업로드 완료: 성공 {result.SuccessCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount}");
-
-            // B마켓 업로드
-            try
+            void Accumulate(Cafe24UploadResult result)
             {
-                StatusText.Text = "B마켓 Cafe24 업로드 중...";
-                var resultB = await uploadService.UploadBMarketAsync(
-                    uploadFile, _lastOutputRoot, options, progress, _cts.Token);
+                totalCount += result.TotalCount;
+                totalSuccess += result.SuccessCount;
+                totalError += result.ErrorCount;
+                totalSkipped += result.SkippedCount;
+                if (!string.IsNullOrWhiteSpace(result.LogPath))
+                {
+                    lastLogPath = result.LogPath;
+                }
+            }
+
+            async Task RunReadyMarketUploadAsync()
+            {
+                StatusText.Text = "준비몰 Cafe24 업로드 중...";
+                var resultB = await uploadService.UploadBMarketAsync(uploadFile, _lastOutputRoot, options, progress, _cts.Token);
+                Accumulate(resultB);
                 if (resultB.TotalCount > 0)
-                    Log($"Cafe24 B마켓 업로드 완료: 성공 {resultB.SuccessCount} / 오류 {resultB.ErrorCount} / 스킵 {resultB.SkippedCount}");
-            }
-            catch (Cafe24ReauthenticationRequiredException exB)
-            {
-                Log($"B마켓 Cafe24 재인증 필요: {exB.Message}");
-            }
-            catch (Exception exB)
-            {
-                Log($"B마켓 업로드 오류 (A마켓은 성공): {exB.Message}");
+                {
+                    Log($"Cafe24 준비몰 업로드 완료: 성공 {resultB.SuccessCount} / 오류 {resultB.ErrorCount} / 스킵 {resultB.SkippedCount}");
+                }
+                else
+                {
+                    Log("Cafe24 준비몰 업로드 스킵: B마켓 시트 또는 대상 상품이 없습니다.");
+                }
             }
 
-            StatusText.Text = $"업로드 완료 (A: {result.SuccessCount})";
-            UploadSummaryText.Text = $"총 {result.TotalCount} | 성공 {result.SuccessCount} | 오류 {result.ErrorCount} | 스킵 {result.SkippedCount}";
-            OpenUploadLogButton.IsEnabled = !string.IsNullOrEmpty(result.LogPath);
+            if (runHomeMarket)
+            {
+                StatusText.Text = "홈런마켓 Cafe24 업로드 중...";
+                var result = await uploadService.UploadAsync(uploadFile, _lastOutputRoot, options, progress, _cts.Token);
+                Accumulate(result);
+                Log($"Cafe24 홈런마켓 업로드 완료: 성공 {result.SuccessCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount}");
+            }
 
-            LoadUploadLog(result.LogPath);
+            if (runReadyMarket)
+            {
+                if (runHomeMarket)
+                {
+                    try
+                    {
+                        await RunReadyMarketUploadAsync();
+                    }
+                    catch (Cafe24ReauthenticationRequiredException exB)
+                    {
+                        Log($"준비몰 Cafe24 재인증 필요: {exB.Message}");
+                    }
+                    catch (Exception exB)
+                    {
+                        Log($"준비몰 업로드 오류 (홈런마켓은 성공): {exB.Message}");
+                    }
+                }
+                else
+                {
+                    await RunReadyMarketUploadAsync();
+                }
+            }
+
+            _lastUploadLogPath = lastLogPath;
+            StatusText.Text = $"업로드 완료 ({marketLabel}, 성공: {totalSuccess})";
+            UploadSummaryText.Text = $"{marketLabel} | 총 {totalCount} | 성공 {totalSuccess} | 오류 {totalError} | 스킵 {totalSkipped}";
+            OpenUploadLogButton.IsEnabled = !string.IsNullOrEmpty(lastLogPath);
+            if (!string.IsNullOrEmpty(lastLogPath))
+            {
+                LoadUploadLog(lastLogPath);
+            }
         }
         catch (OperationCanceledException) { Log("업로드 취소됨"); StatusText.Text = "취소됨"; }
         catch (Cafe24ReauthenticationRequiredException ex)
@@ -1590,10 +1724,17 @@ public partial class MainWindow : Window
             return;
         }
 
-        var uploadFile = FindLatestFile(_lastOutputRoot, "업로드용_*.xlsx");
+        if (!TryGetSelectedCafe24Markets(out var runHomeMarket, out var runReadyMarket, out var marketLabel))
+        {
+            return;
+        }
+
+        var uploadFile = !string.IsNullOrEmpty(_lastOutputFile) && File.Exists(_lastOutputFile)
+            ? _lastOutputFile
+            : FindLatestFile(_lastOutputRoot, "업로드용_*.xlsx");
         if (uploadFile == null)
         {
-            MessageBox.Show("업로드용 엑셀 파일을 찾을 수 없습니다.", "알림", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("업로드용 엑셀을 찾을 수 없습니다.", "알림", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -1615,33 +1756,58 @@ public partial class MainWindow : Window
             var createService = new Cafe24CreateProductService(_v3Root, _legacyRoot);
             var progress = new Progress<string>(msg => Log(msg));
 
-            var result = await createService.CreateAsync(
-                uploadFile, _lastOutputRoot, progress, _cts.Token);
-
-            Log($"신규등록 완료: 생성 {result.CreatedCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount}");
-
-            // B마켓 신규등록
-            try
+            async Task RunReadyMarketCreateAsync()
             {
-                StatusText.Text = "B마켓 신규상품 등록 중...";
-                Log("── [B마켓] 신규등록 시작 ──");
-                var resultB = await createService.CreateBMarketAsync(
-                    uploadFile, _lastOutputRoot, progress, _cts.Token);
+                StatusText.Text = "준비몰 신규상품 등록 중...";
+                Log("── [준비몰] 신규등록 시작 ──");
+                var resultB = await createService.CreateBMarketAsync(uploadFile, _lastOutputRoot, progress, _cts.Token);
+                totalCreated += resultB.CreatedCount;
+                totalError += resultB.ErrorCount;
+                totalSkipped += resultB.SkippedCount;
                 if (resultB.TotalCount > 0)
                 {
-                    Log($"[B마켓] 신규등록 완료: 생성 {resultB.CreatedCount} / 오류 {resultB.ErrorCount} / 스킵 {resultB.SkippedCount}");
+                    Log($"[준비몰] 신규등록 완료: 생성 {resultB.CreatedCount} / 오류 {resultB.ErrorCount} / 스킵 {resultB.SkippedCount}");
+                }
+                else
+                {
+                    Log("[준비몰] 신규등록 스킵: B마켓 시트에 등록 대상이 없습니다.");
                 }
             }
-            catch (Cafe24ReauthenticationRequiredException exB)
+
+            if (runHomeMarket)
             {
-                Log($"[B마켓] 재인증 필요: {exB.Message}");
-            }
-            catch (Exception exB)
-            {
-                Log($"[B마켓] 신규등록 오류: {exB.Message}");
+                StatusText.Text = "홈런마켓 신규상품 등록 중...";
+                var result = await createService.CreateAsync(uploadFile, _lastOutputRoot, progress, _cts.Token);
+                totalCreated += result.CreatedCount;
+                totalError += result.ErrorCount;
+                totalSkipped += result.SkippedCount;
+                Log($"[홈런마켓] 신규등록 완료: 생성 {result.CreatedCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount}");
             }
 
-            StatusText.Text = $"등록 완료 (생성: {result.CreatedCount})";
+            if (runReadyMarket)
+            {
+                if (runHomeMarket)
+                {
+                    try
+                    {
+                        await RunReadyMarketCreateAsync();
+                    }
+                    catch (Cafe24ReauthenticationRequiredException exB)
+                    {
+                        Log($"[준비몰] 재인증 필요: {exB.Message}");
+                    }
+                    catch (Exception exB)
+                    {
+                        Log($"[준비몰] 신규등록 오류: {exB.Message}");
+                    }
+                }
+                else
+                {
+                    await RunReadyMarketCreateAsync();
+                }
+            }
+
+            StatusText.Text = $"등록 완료 ({marketLabel}, 생성: {totalCreated})";
         }
         catch (OperationCanceledException) { Log("등록 취소됨"); StatusText.Text = "취소됨"; }
         catch (Cafe24ReauthenticationRequiredException ex)
@@ -1651,12 +1817,11 @@ public partial class MainWindow : Window
             await PromptCafe24ReauthenticationAsync(
                 "Cafe24 재인증 필요",
                 ex.Message,
-                "새 토큰을 저장했습니다. 신규상품 등록을 다시 실행해 주세요.");
+                "새 토큰을 저장했습니다. Cafe24 신규등록을 다시 실행해 주세요.");
         }
         catch (Exception ex)
         {
             Log($"등록 오류: {ex.Message}");
-            StatusText.Text = "등록 오류";
             MessageBox.Show(ex.Message, "신규상품 등록 오류", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
@@ -1686,6 +1851,7 @@ public partial class MainWindow : Window
             CoupangSourcePath.Text = files[0];
         }
     }
+            $"대상 몰: {marketLabel}\n" +
 
     private void CoupangBrowseSource_Click(object sender, RoutedEventArgs e)
     {
@@ -1709,6 +1875,11 @@ public partial class MainWindow : Window
             // _lastOutputRoot에서 자동 탐색
             if (!string.IsNullOrEmpty(_lastOutputRoot) && Directory.Exists(_lastOutputRoot))
             {
+            var totalCount = 0;
+            var totalSuccess = 0;
+            var totalError = 0;
+            var totalSkipped = 0;
+            string? lastLogPath = null;
                 var found = FindLatestFile(_lastOutputRoot, "업로드용_*.xlsx");
                 if (found != null)
                 {
@@ -1780,6 +1951,7 @@ public partial class MainWindow : Window
             MessageBox.Show(ex.Message, "쿠팡 업로드 오류", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
+            $"대상 몰: {marketLabel}\n" +
         {
             CoupangUploadButton.IsEnabled = true;
             ProgressBar.IsIndeterminate = false;
@@ -1795,6 +1967,9 @@ public partial class MainWindow : Window
         public string Error { get; set; } = "";
     }
 
+            var totalCreated = 0;
+            var totalError = 0;
+            var totalSkipped = 0;
     private void LoadUploadLog(string? logPath)
     {
         if (string.IsNullOrEmpty(logPath) || !File.Exists(logPath)) return;
@@ -2180,11 +2355,9 @@ public partial class MainWindow : Window
             "Cafe24 업로드 확인", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (confirm != MessageBoxResult.Yes) return;
 
-        // 이력에서 결과 로드
         _lastOutputRoot = job.OutputRoot;
         _lastOutputFile = job.OutputFile;
 
-        // Cafe24 업로드 탭으로 이동 후 업로드 실행
         _cts = new CancellationTokenSource();
         Cafe24UploadButton.IsEnabled = false;
 
@@ -2204,15 +2377,61 @@ public partial class MainWindow : Window
             var uploadService = new Cafe24UploadService(_v3Root, _legacyRoot);
             var progress = new Progress<string>(msg => Log(msg));
 
-            var result = await uploadService.UploadAsync(
-                uploadFile, job.OutputRoot, options, progress, _cts.Token);
+            async Task RunReadyMarketUploadAsync()
+            {
+                StatusText.Text = "준비몰 Cafe24 업로드 중...";
+                var resultB = await uploadService.UploadBMarketAsync(uploadFile, job.OutputRoot, options, progress, _cts.Token);
+                Accumulate(resultB);
+                if (resultB.TotalCount > 0)
+                {
+                    Log($"Cafe24 준비몰 업로드 완료: 성공 {resultB.SuccessCount} / 오류 {resultB.ErrorCount} / 스킵 {resultB.SkippedCount}");
+                }
+                else
+                {
+                    Log("Cafe24 준비몰 업로드 스킵: B마켓 시트 또는 대상 상품이 없습니다.");
+                }
+            }
 
-            _lastUploadLogPath = result.LogPath;
-            Log($"Cafe24 업로드 완료: 성공 {result.SuccessCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount}");
-            StatusText.Text = $"업로드 완료 (성공: {result.SuccessCount})";
-            UploadSummaryText.Text = $"총 {result.TotalCount} | 성공 {result.SuccessCount} | 오류 {result.ErrorCount} | 스킵 {result.SkippedCount}";
-            OpenUploadLogButton.IsEnabled = !string.IsNullOrEmpty(result.LogPath);
-            LoadUploadLog(result.LogPath);
+            if (runHomeMarket)
+            {
+                StatusText.Text = "홈런마켓 Cafe24 업로드 중...";
+                var result = await uploadService.UploadAsync(uploadFile, job.OutputRoot, options, progress, _cts.Token);
+                Accumulate(result);
+                Log($"Cafe24 홈런마켓 업로드 완료: 성공 {result.SuccessCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount}");
+            }
+
+            if (runReadyMarket)
+            {
+                if (runHomeMarket)
+                {
+                    try
+                    {
+                        await RunReadyMarketUploadAsync();
+                    }
+                    catch (Cafe24ReauthenticationRequiredException exB)
+                    {
+                        Log($"준비몰 Cafe24 재인증 필요: {exB.Message}");
+                    }
+                    catch (Exception exB)
+                    {
+                        Log($"준비몰 업로드 오류 (홈런마켓은 성공): {exB.Message}");
+                    }
+                }
+                else
+                {
+                    await RunReadyMarketUploadAsync();
+                }
+            }
+
+            _lastUploadLogPath = lastLogPath;
+            Log($"선택한 몰 Cafe24 업로드 완료: 대상 {marketLabel} / 성공 {totalSuccess} / 오류 {totalError} / 스킵 {totalSkipped}");
+            StatusText.Text = $"업로드 완료 ({marketLabel}, 성공: {totalSuccess})";
+            UploadSummaryText.Text = $"{marketLabel} | 총 {totalCount} | 성공 {totalSuccess} | 오류 {totalError} | 스킵 {totalSkipped}";
+            OpenUploadLogButton.IsEnabled = !string.IsNullOrEmpty(lastLogPath);
+            if (!string.IsNullOrEmpty(lastLogPath))
+            {
+                LoadUploadLog(lastLogPath);
+            }
         }
         catch (OperationCanceledException) { Log("업로드 취소됨"); StatusText.Text = "취소됨"; }
         catch (Cafe24ReauthenticationRequiredException ex)
@@ -2271,29 +2490,54 @@ public partial class MainWindow : Window
             var createService = new Cafe24CreateProductService(_v3Root, _legacyRoot);
             var progress = new Progress<string>(msg => Log(msg));
 
-            var result = await createService.CreateAsync(
-                uploadFile, job.OutputRoot, progress, _cts.Token);
-
-            Log($"신규등록 완료: 생성 {result.CreatedCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount}");
-
-            // B마켓 신규등록
-            try
+            async Task RunReadyMarketCreateAsync()
             {
-                StatusText.Text = "B마켓 신규상품 등록 중...";
-                Log("── [B마켓] 신규등록 시작 ──");
-                var resultB = await createService.CreateBMarketAsync(
-                    uploadFile, job.OutputRoot, progress, _cts.Token);
+                StatusText.Text = "준비몰 신규상품 등록 중...";
+                Log("── [준비몰] 신규등록 시작 ──");
+                var resultB = await createService.CreateBMarketAsync(uploadFile, job.OutputRoot, progress, _cts.Token);
+                totalCreated += resultB.CreatedCount;
+                totalError += resultB.ErrorCount;
+                totalSkipped += resultB.SkippedCount;
                 if (resultB.TotalCount > 0)
                 {
-                    Log($"[B마켓] 신규등록 완료: 생성 {resultB.CreatedCount} / 오류 {resultB.ErrorCount} / 스킵 {resultB.SkippedCount}");
+                    Log($"[준비몰] 신규등록 완료: 생성 {resultB.CreatedCount} / 오류 {resultB.ErrorCount} / 스킵 {resultB.SkippedCount}");
+                }
+                else
+                {
+                    Log("[준비몰] 신규등록 스킵: B마켓 시트에 등록 대상이 없습니다.");
                 }
             }
-            catch (Exception exB)
+
+            if (runHomeMarket)
             {
-                Log($"[B마켓] 신규등록 오류: {exB.Message}");
+                StatusText.Text = "홈런마켓 신규상품 등록 중...";
+                var result = await createService.CreateAsync(uploadFile, job.OutputRoot, progress, _cts.Token);
+                totalCreated += result.CreatedCount;
+                totalError += result.ErrorCount;
+                totalSkipped += result.SkippedCount;
+                Log($"[홈런마켓] 신규등록 완료: 생성 {result.CreatedCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount}");
             }
 
-            StatusText.Text = $"등록 완료 (생성: {result.CreatedCount})";
+            if (runReadyMarket)
+            {
+                if (runHomeMarket)
+                {
+                    try
+                    {
+                        await RunReadyMarketCreateAsync();
+                    }
+                    catch (Exception exB)
+                    {
+                        Log($"[준비몰] 신규등록 오류: {exB.Message}");
+                    }
+                }
+                else
+                {
+                    await RunReadyMarketCreateAsync();
+                }
+            }
+
+            StatusText.Text = $"등록 완료 ({marketLabel}, 생성: {totalCreated})";
         }
         catch (OperationCanceledException) { Log("등록 취소됨"); StatusText.Text = "취소됨"; }
         catch (Exception ex)
@@ -2339,6 +2583,11 @@ public partial class MainWindow : Window
     private void HistoryViewProducts_Click(object sender, RoutedEventArgs e)
     {
         var job = GetSelectedJob();
+        if (!TryGetSelectedCafe24Markets(out var runHomeMarket, out var runReadyMarket, out var marketLabel))
+        {
+            return;
+        }
+
         if (job == null) { MessageBox.Show("이력을 선택하세요.", "알림"); return; }
 
         if (job.SelectedCodes.Count == 0)
@@ -2352,6 +2601,7 @@ public partial class MainWindow : Window
         sb.AppendLine($"총 {job.SelectedCodes.Count}개 상품코드");
         sb.AppendLine(new string('─', 40));
         for (int i = 0; i < job.SelectedCodes.Count; i++)
+            $"대상 몰: {marketLabel}\n" +
             sb.AppendLine($"  {i + 1}. {job.SelectedCodes[i]}");
 
         MessageBox.Show(sb.ToString(), "상품목록", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -2380,6 +2630,23 @@ public partial class MainWindow : Window
         ImageSelectionTab.IsSelected = true;
     }
 
+            var totalCount = 0;
+            var totalSuccess = 0;
+            var totalError = 0;
+            var totalSkipped = 0;
+            string? lastLogPath = null;
+
+            void Accumulate(Cafe24UploadResult result)
+            {
+                totalCount += result.TotalCount;
+                totalSuccess += result.SuccessCount;
+                totalError += result.ErrorCount;
+                totalSkipped += result.SkippedCount;
+                if (!string.IsNullOrWhiteSpace(result.LogPath))
+                {
+                    lastLogPath = result.LogPath;
+                }
+            }
     #endregion
 
     #region ═══ 설정 탭 ═══
@@ -2419,6 +2686,11 @@ public partial class MainWindow : Window
             SettingsMallId.Text = state.Config.MallId;
             SettingsTokenStatus.Text = string.IsNullOrEmpty(state.Config.AccessToken)
                 ? "토큰 없음" : $"토큰 로드됨 ({state.ConfigPath})";
+        if (!TryGetSelectedCafe24Markets(out var runHomeMarket, out var runReadyMarket, out var marketLabel))
+        {
+            return;
+        }
+
 
             if (string.IsNullOrWhiteSpace(SettingsTokenPath.Text))
                 SettingsTokenPath.Text = state.ConfigPath;
@@ -2432,6 +2704,7 @@ public partial class MainWindow : Window
 
     private async void ReauthorizeToken_Click(object sender, RoutedEventArgs e)
     {
+            $"대상 몰: {marketLabel}\n" +
         if (await StartCafe24ReauthenticationAsync())
         {
             MessageBox.Show("Cafe24 새 토큰을 저장했습니다.", "Cafe24 다시 인증", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -2447,6 +2720,9 @@ public partial class MainWindow : Window
         if (MessageBox.Show(message, title, MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
         {
             return false;
+            var totalCreated = 0;
+            var totalError = 0;
+            var totalSkipped = 0;
         }
 
         if (!await StartCafe24ReauthenticationAsync())

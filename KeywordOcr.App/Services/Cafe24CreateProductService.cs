@@ -51,6 +51,7 @@ public sealed class Cafe24CreateProductService
 
         progress?.Report($"신규등록 기준 파일: {Path.GetFileName(uploadWorkbookPath)}");
         progress?.Report($"작업 폴더: {workingDirectory}");
+        progress?.Report($"대상 몰: {tokenState.Config.MallId}");
         progress?.Report($"대상 행 수: {rows.Count}개");
 
         var priceReview = Cafe24UploadSupport.LoadPriceReview(options.PriceDataPath);
@@ -181,14 +182,15 @@ public sealed class Cafe24CreateProductService
             return new Cafe24CreateProductsResult(workingDirectory, "", "", 0, 0, 0, 0);
         }
 
-        var rows = ReadRows(uploadWorkbookPath, "B마켓");
+        var rows = ReadRows(uploadWorkbookPath, "B마켓", allowDefaultFallback: false);
         if (rows.Count == 0)
         {
-            progress?.Report("[B마켓] B마켓 시트에 등록할 행이 없습니다.");
+            progress?.Report("[B마켓] B마켓 시트를 찾지 못했거나 등록할 행이 없습니다.");
             return new Cafe24CreateProductsResult(workingDirectory, uploadWorkbookPath, "", 0, 0, 0, 0);
         }
 
         progress?.Report($"[B마켓] 신규등록 기준 파일: {Path.GetFileName(uploadWorkbookPath)}");
+        progress?.Report($"[B마켓] 대상 몰: {tokenState.Config.MallId}");
         progress?.Report($"[B마켓] 대상 행 수: {rows.Count}개");
 
         var priceReview = Cafe24UploadSupport.LoadPriceReview(options.PriceDataPath);
@@ -453,12 +455,18 @@ public sealed class Cafe24CreateProductService
         return request;
     }
 
-    private static List<Dictionary<string, string>> ReadRows(string workbookPath, string sheetName = "분리추출후")
+    private static List<Dictionary<string, string>> ReadRows(
+        string workbookPath,
+        string sheetName = "분리추출후",
+        bool allowDefaultFallback = true)
     {
         using var workbook = WorkbookFileLoader.OpenReadOnly(workbookPath);
-        var worksheet = workbook.Worksheets.Contains(sheetName) ? workbook.Worksheet(sheetName)
-            : workbook.Worksheets.Contains("분리추출후") ? workbook.Worksheet("분리추출후")
-            : workbook.Worksheet(1);
+        var worksheet = Cafe24UploadSupport.ResolveWorksheet(workbook, new[] { sheetName }, allowDefaultFallback);
+        if (worksheet is null)
+        {
+            return new List<Dictionary<string, string>>();
+        }
+
         var headerRow = worksheet.FirstRowUsed();
         if (headerRow is null)
         {
