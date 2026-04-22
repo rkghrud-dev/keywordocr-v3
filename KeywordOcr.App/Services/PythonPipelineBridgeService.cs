@@ -29,7 +29,8 @@ public sealed class PythonPipelineBridgeService
         string phase = "full",
         string exportRoot = "",
         string model = "",
-        int chunkSize = 10)
+        int chunkSize = 10,
+        string keywordVersion = "2.0")
     {
         var scriptPath = ResolveScriptPath();
 
@@ -86,6 +87,7 @@ public sealed class PythonPipelineBridgeService
         if (!string.IsNullOrEmpty(model))
             AddArg(psi, "--model", model);
         AddArg(psi, "--chunk-size", chunkSize.ToString());
+        AddArg(psi, "--keyword-version", string.IsNullOrWhiteSpace(keywordVersion) ? "2.0" : keywordVersion.Trim());
         psi.Environment["PYTHONIOENCODING"] = "utf-8";
         psi.Environment["PYTHONUTF8"] = "1";
 

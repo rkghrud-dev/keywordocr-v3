@@ -5,9 +5,21 @@
     <Nullable>enable</Nullable>
     <UseWPF>true</UseWPF>
     <RootNamespace>KeywordOcr.App</RootNamespace>
+    <AssemblyName>KeywordOcr</AssemblyName>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="BCrypt.Net-Next" Version="4.1.0" />
     <PackageReference Include="ClosedXML" Version="0.104.2" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="Bridge\**\*.*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\backend\app\**\*.*" LinkBase="backend\app" CopyToPublishDirectory="PreserveNewest" Exclude="..\backend\**\__pycache__\**;..\backend\**\*.pyc;..\backend\**\*.pyo" />
+    <Content Include="..\backend\data\**\*.*" LinkBase="backend\data" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\backend\prompts\**\*.*" LinkBase="backend\prompts" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

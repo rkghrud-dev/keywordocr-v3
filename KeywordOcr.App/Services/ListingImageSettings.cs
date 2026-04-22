@@ -28,4 +28,6 @@ public sealed record ListingImageSettings(
     int BNameMin = 63,
     int BNameMax = 98,
     int ATagCount = 20,
-    int BTagCount = 14);
+    int BTagCount = 14,
+    string KeywordVersion = "2.0",
+    string BMarketTokenPath = "");

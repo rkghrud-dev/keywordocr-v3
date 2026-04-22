@@ -46,9 +46,7 @@ public sealed class CoupangApiClient : IDisposable
     /// <summary>키 파일(~/Desktop/key/coupang_wing_api.txt)에서 로드</summary>
     public static CoupangApiClient FromKeyFile()
     {
-        var keyDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "key");
-        var keyFile = Path.Combine(keyDir, "coupang_wing_api.txt");
+        var keyFile = DesktopKeyStore.GetPath("coupang_wing_api.txt");
 
         var kv = new Dictionary<string, string>();
         if (File.Exists(keyFile))

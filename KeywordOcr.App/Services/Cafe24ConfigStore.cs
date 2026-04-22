@@ -27,18 +27,15 @@ internal sealed class Cafe24ConfigStore
     {
         var configuredTokenPath = ResolveConfiguredTokenPath();
         var sharedTokenJsonPath = Cafe24SharedTokenStore.GetDefaultPath();
-        var desktopKeywordocr = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "keywordocr");
+        var preferredKeyPath = ResolveKeyFolderPath(preferredTokenFilePath);
         var tokenFilePath = FindFirstExisting(
+            preferredKeyPath ?? string.Empty,
             sharedTokenJsonPath,
-            ResolveOptionalPath(preferredTokenFilePath) ?? string.Empty,
             configuredTokenPath,
-            Path.Combine(_v2Root, "cafe24_token.txt"),
-            Path.Combine(_legacyRoot, "cafe24_token.txt"),
-            Path.Combine(desktopKeywordocr, "cafe24_token.txt"));
+            DesktopKeyStore.GetPath("cafe24_token.txt"));
         var envPath = FindFirstExisting(
-            Path.Combine(_v2Root, ".env"),
-            Path.Combine(_legacyRoot, ".env"));
+            DesktopKeyStore.GetPath("keywordocr.env"),
+            DesktopKeyStore.GetPath(".env"));
 
         var fileValues = string.IsNullOrWhiteSpace(tokenFilePath)
             ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -66,9 +63,12 @@ internal sealed class Cafe24ConfigStore
         return new Cafe24TokenState(configPath, config);
     }
 
-    public Cafe24TokenState LoadTokenStateB()
+    public Cafe24TokenState LoadTokenStateB(string? preferredPath = null)
     {
-        var sharedTokenJsonPath = Cafe24SharedTokenStore.GetDefaultPathB();
+        var preferredKeyPath = ResolveKeyFolderPath(preferredPath);
+        var sharedTokenJsonPath = !string.IsNullOrWhiteSpace(preferredKeyPath) && File.Exists(preferredKeyPath)
+            ? preferredKeyPath
+            : Cafe24SharedTokenStore.GetDefaultPathB();
         if (!File.Exists(sharedTokenJsonPath))
             throw new FileNotFoundException("B마켓 토큰 파일을 찾지 못했습니다.", sharedTokenJsonPath);
 
@@ -214,7 +214,30 @@ internal sealed class Cafe24ConfigStore
         }
 
         var values = LoadKeyValueFile(configPath);
-        return ResolveOptionalPath(GetConfigValue(values, "TOKEN_FILE")) ?? string.Empty;
+        return ResolveKeyFolderPath(GetConfigValue(values, "TOKEN_FILE")) ?? string.Empty;
+    }
+
+    private static string? ResolveKeyFolderPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        var trimmed = path.Trim();
+        var resolved = Path.IsPathRooted(trimmed)
+            ? Path.GetFullPath(trimmed)
+            : DesktopKeyStore.GetPath(trimmed);
+
+        var keyDir = Path.GetFullPath(DesktopKeyStore.DirectoryPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var normalized = Path.GetFullPath(resolved);
+
+        return normalized.Equals(keyDir, StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith(keyDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith(keyDir + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                ? normalized
+                : null;
     }
 
     private static Dictionary<string, string> LoadTokenFile(string path)

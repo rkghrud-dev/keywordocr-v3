@@ -38,29 +38,28 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<ImageThumbnailItem> _imageThumbnails = new();
     private readonly Dictionary<string, ImageSelection> _imageSelections = new(StringComparer.OrdinalIgnoreCase);
     private bool _selectingBMarket; // true면 B마켓 대표 선택 모드
+    private string _bMarketTokenPath = ""; // 준비몰 토큰 JSON 경로 (비어 있으면 기본 경로 사용)
     private string? _imageListingRoot;
     private JobHistoryService? _jobHistory;
     private string _settingsPath = "";
     private bool _syncingKeywordVersion;
     private bool _syncingCafe24MarketTargetChecks;
 
+    // 상품 선택 목록
+    private readonly ObservableCollection<UploadProductItem> _cafe24Items = new();
+    private readonly ObservableCollection<UploadProductItem> _coupangItems = new();
+    private readonly ObservableCollection<UploadProductItem> _basicCafe24Items = new();
+    private int _cafe24LastClickIndex = -1;
+    private int _coupangLastClickIndex = -1;
+    private int _basicCafe24LastClickIndex = -1;
+    private Services.UploadHistoryStore _uploadHistory = new();
+
     public MainWindow()
     {
         System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
         InitializeComponent();
 
-        _v3Root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
-
-        // v3 단독 구조: 설정 파일은 v3Root에, Python은 v3Root/backend/에
-        _pythonRoot = Path.Combine(_v3Root, "backend");
-        _legacyRoot = Directory.Exists(Path.Combine(_v3Root, "app_settings.json"))
-            ? _v3Root
-            : Path.GetFullPath(Path.Combine(_v3Root, ".."));  // fallback: 구 중첩 구조
-
-        // Python import 경로: v3/backend/ (app/services/pipeline.py가 여기에 있음)
-        _pythonRoot = Path.Combine(_v3Root, "backend");
-        if (!Directory.Exists(Path.Combine(_pythonRoot, "app")))
-            _pythonRoot = _legacyRoot;  // fallback
+        (_v3Root, _legacyRoot, _pythonRoot) = ResolveApplicationRoots();
 
         _settingsPath = Path.Combine(_legacyRoot, "app_settings.json");
 
@@ -68,6 +67,9 @@ public partial class MainWindow : Window
         PriceGrid.ItemsSource = _priceRows;
         ImageGsListBox.ItemsSource = _imageGsCodes;
         ThumbnailPanel.ItemsSource = _imageThumbnails;
+        Cafe24ProductList.ItemsSource = _cafe24Items;
+        CoupangProductList.ItemsSource = _coupangItems;
+        BasicCafe24ProductGrid.ItemsSource = _basicCafe24Items;
 
         // 설정 탭 초기값
         SettingsLegacyRoot.Text = _legacyRoot;
@@ -75,6 +77,8 @@ public partial class MainWindow : Window
         Cafe24DateTag.Text = DateTime.Now.ToString("yyyyMMdd");
         LoadTokenInfo();
         LoadAppSettings();
+        if (string.IsNullOrEmpty(SettingsBTokenPath.Text))
+            LoadTokenInfoB(); // 설정 파일 없을 때 기본 경로로 시도
         SyncCafe24MarketTargetCheckBoxes(true, true);
 
         _jobHistory = new JobHistoryService(_legacyRoot);
@@ -82,6 +86,50 @@ public partial class MainWindow : Window
 
         Log("KeywordOCR v3 시작");
         Log($"Python 루트: {_pythonRoot}");
+    }
+
+    private static (string V3Root, string LegacyRoot, string PythonRoot) ResolveApplicationRoots()
+    {
+        var baseDir = Path.GetFullPath(AppContext.BaseDirectory);
+        var candidates = new[]
+        {
+            baseDir,
+            Path.GetFullPath(Path.Combine(baseDir, "..")),
+            Path.GetFullPath(Path.Combine(baseDir, "..", "..")),
+            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..")),
+            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", ".."))
+        };
+
+        var v3Root = candidates.FirstOrDefault(IsV3Root)
+            ?? Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", ".."));
+
+        var legacyRoot = File.Exists(Path.Combine(v3Root, "app_settings.json"))
+            || Directory.Exists(Path.Combine(v3Root, "backend"))
+                ? v3Root
+                : Path.GetFullPath(Path.Combine(v3Root, ".."));
+
+        var pythonRoot = ResolvePythonRoot(v3Root, legacyRoot, baseDir);
+        return (v3Root, legacyRoot, pythonRoot);
+    }
+
+    private static bool IsV3Root(string root)
+    {
+        return Directory.Exists(Path.Combine(root, "backend", "app"))
+            && (Directory.Exists(Path.Combine(root, "KeywordOcr.App"))
+                || Directory.Exists(Path.Combine(root, "Bridge")));
+    }
+
+    private static string ResolvePythonRoot(string v3Root, string legacyRoot, string baseDir)
+    {
+        var candidates = new[]
+        {
+            Path.Combine(v3Root, "backend"),
+            Path.Combine(baseDir, "backend"),
+            legacyRoot
+        };
+
+        return candidates.FirstOrDefault(path => Directory.Exists(Path.Combine(path, "app")))
+            ?? Path.Combine(v3Root, "backend");
     }
 
     #region ═══ 드래그 앤 드롭 ═══
@@ -246,6 +294,7 @@ public partial class MainWindow : Window
             TestProductListPanel.Visibility = Visibility.Visible;
             TestProductList.ItemsSource = _products;
             UpdateProductCount();
+            ApplyHistoryToProducts();
             SetPipelineEnabled(true);
             Log($"상품 {items.Count}개 로드됨");
         }
@@ -406,6 +455,43 @@ public partial class MainWindow : Window
 
     private void ProductCheck_Changed(object sender, RoutedEventArgs e) => UpdateProductCount();
 
+    /// <summary>
+    /// _jobHistory에서 각 상품의 마지막 처리 날짜를 _products에 반영
+    /// </summary>
+    private void ApplyHistoryToProducts()
+    {
+        if (_jobHistory == null || _products.Count == 0) return;
+
+        // GS코드 → 가장 최근 처리 시각
+        var lastProcessed = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        foreach (var record in _jobHistory.Records)
+        {
+            foreach (var code in record.SelectedCodes)
+            {
+                if (!lastProcessed.TryGetValue(code, out var existing) || record.Timestamp > existing)
+                    lastProcessed[code] = record.Timestamp;
+            }
+        }
+
+        foreach (var product in _products)
+        {
+            product.LastProcessedAt = lastProcessed.TryGetValue(product.Code, out var date) ? date : null;
+        }
+
+        // 이력이 있는 항목을 위로, 없는 항목을 아래로 재정렬
+        var sorted = _products
+            .OrderByDescending(p => p.LastProcessedAt.HasValue)
+            .ThenByDescending(p => p.LastProcessedAt)
+            .ToList();
+
+        _products.Clear();
+        foreach (var p in sorted)
+            _products.Add(p);
+
+        ProductList.Items.Refresh();
+        UpdateProductCount();
+    }
+
     private void UpdateProductCount()
     {
         var selected = _products.Count(p => p.IsSelected);
@@ -559,7 +645,9 @@ public partial class MainWindow : Window
             BNameMin: ParseInt(SettingsBNameMin, 63),
             BNameMax: ParseInt(SettingsBNameMax, 98),
             ATagCount: ParseInt(SettingsATagCount, 20),
-            BTagCount: ParseInt(SettingsBTagCount, 14)
+            BTagCount: ParseInt(SettingsBTagCount, 14),
+            KeywordVersion: GetSelectedKeywordVersion(),
+            BMarketTokenPath: _bMarketTokenPath
         );
         SaveAppSettings(s);
         return s;
@@ -605,18 +693,88 @@ public partial class MainWindow : Window
             SettingsBNameMax.Text = s.BNameMax.ToString();
             SettingsATagCount.Text = s.ATagCount.ToString();
             SettingsBTagCount.Text = s.BTagCount.ToString();
+            SetKeywordVersionSelection(string.IsNullOrWhiteSpace(s.KeywordVersion) ? "2.0" : s.KeywordVersion);
 
             // 로고 위치 콤보박스
-            foreach (ComboBoxItem item in SettingsLogoPos.Items)
+            SetComboSelection(SettingsLogoPos, s.LogoPosition);
+
+            // B마켓 토큰 경로
+            if (!string.IsNullOrWhiteSpace(s.BMarketTokenPath))
             {
-                if (item.Content?.ToString() == s.LogoPosition)
-                {
-                    SettingsLogoPos.SelectedItem = item;
-                    break;
-                }
+                _bMarketTokenPath = s.BMarketTokenPath;
+                SettingsBTokenPath.Text = s.BMarketTokenPath;
+                LoadTokenInfoB();
+            }
+            else
+            {
+                LoadTokenInfoB(); // 기본 경로로 시도
             }
         }
         catch { }
+    }
+
+    private string GetSelectedKeywordVersion()
+    {
+        var selected = GetComboSelectedText(TestKeywordVersionCombo)
+            ?? GetComboSelectedText(KeywordVersionCombo);
+
+        return selected switch
+        {
+            "1.0" => "1.0",
+            "3.0" => "3.0",
+            _ => "2.0",
+        };
+    }
+
+    private void SetKeywordVersionSelection(string? version)
+    {
+        var trimmed = version?.Trim();
+        var normalized = string.Equals(trimmed, "1.0", StringComparison.OrdinalIgnoreCase) ? "1.0"
+            : string.Equals(trimmed, "3.0", StringComparison.OrdinalIgnoreCase) ? "3.0"
+            : "2.0";
+        _syncingKeywordVersion = true;
+        try
+        {
+            SetComboSelection(KeywordVersionCombo, normalized);
+            SetComboSelection(TestKeywordVersionCombo, normalized);
+        }
+        finally
+        {
+            _syncingKeywordVersion = false;
+        }
+    }
+
+    private void KeywordVersionCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingKeywordVersion) return;
+
+        var normalized = GetComboSelectedText(sender as ComboBox) switch
+        {
+            "1.0" => "1.0",
+            "3.0" => "3.0",
+            _ => "2.0",
+        };
+
+        SetKeywordVersionSelection(normalized);
+
+        if (!string.IsNullOrWhiteSpace(_testOutputRoot) && Directory.Exists(_testOutputRoot))
+            RefreshTestCodexCommands(_testOutputRoot);
+    }
+
+    private static string? GetComboSelectedText(ComboBox? comboBox)
+        => (comboBox?.SelectedItem as ComboBoxItem)?.Content?.ToString()?.Trim();
+
+    private static void SetComboSelection(ComboBox comboBox, string? value)
+    {
+        if (comboBox is null || string.IsNullOrWhiteSpace(value)) return;
+        foreach (ComboBoxItem item in comboBox.Items)
+        {
+            if (string.Equals(item.Content?.ToString(), value, StringComparison.OrdinalIgnoreCase))
+            {
+                comboBox.SelectedItem = item;
+                return;
+            }
+        }
     }
 
     private async void RunPipeline_Click(object sender, RoutedEventArgs e)
@@ -640,16 +798,17 @@ public partial class MainWindow : Window
             var bridge = new PythonPipelineBridgeService(_v3Root, _pythonRoot);
             var progress = new Progress<string>(msg => Log(msg));
             var selectedModel = (ModelCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
+            var selectedKeywordVersion = GetSelectedKeywordVersion();
 
             if (settings.MakeListing)
             {
                 // ── 2-Phase 실행: 이미지 먼저 → 피커 → 분석 병렬 ──
-                Log($"Phase 1: 이미지 다운로드 + 가공 시작... (모델: {selectedModel})");
+                Log($"Phase 1: 이미지 다운로드 + 가공 시작... (모델: {selectedModel}, 키워드 버전: {selectedKeywordVersion})");
                 StatusText.Text = "Phase 1: 이미지 처리 중...";
                 ProgressBar.IsIndeterminate = true;
 
                 var phase1 = await bridge.RunPipelineAsync(
-                    inputFile, settings, progress, _cts.Token, phase: "images", model: selectedModel);
+                    inputFile, settings, progress, _cts.Token, phase: "images", model: selectedModel, keywordVersion: selectedKeywordVersion);
 
                 _lastOutputRoot = phase1.OutputRoot;
                 Log($"Phase 1 완료 — 이미지 폴더: {phase1.OutputRoot}");
@@ -660,7 +819,7 @@ public partial class MainWindow : Window
                 var phase2Progress = new Progress<string>(msg => Log($"[Phase2] {msg}"));
                 var phase2Task = bridge.RunPipelineAsync(
                     inputFile, settings, phase2Progress, _cts.Token,
-                    phase: "analysis", exportRoot: phase1.OutputRoot, model: selectedModel);
+                    phase: "analysis", exportRoot: phase1.OutputRoot, model: selectedModel, keywordVersion: selectedKeywordVersion);
 
                 // 이미지 선택 탭으로 전환 + 이미지 로드
                 LoadListingImagesFromRoot(phase1.OutputRoot);
@@ -672,11 +831,11 @@ public partial class MainWindow : Window
             else
             {
                 // ── 기존 단일 실행 (이미지 없이 키워드만) ──
-                Log($"전체 파이프라인 실행 시작... (모델: {selectedModel})");
+                Log($"전체 파이프라인 실행 시작... (모델: {selectedModel}, 키워드 버전: {selectedKeywordVersion})");
                 StatusText.Text = "실행 중...";
                 ProgressBar.IsIndeterminate = true;
 
-                var result = await bridge.RunPipelineAsync(inputFile, settings, progress, _cts.Token, model: selectedModel);
+                var result = await bridge.RunPipelineAsync(inputFile, settings, progress, _cts.Token, model: selectedModel, keywordVersion: selectedKeywordVersion);
                 OnPipelineComplete(result);
             }
         }
@@ -699,12 +858,13 @@ public partial class MainWindow : Window
             var bridge = new PythonPipelineBridgeService(_v3Root, _pythonRoot);
             var progress = new Progress<string>(msg => Log(msg));
             var selectedModel = (ModelCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
+            var selectedKeywordVersion = GetSelectedKeywordVersion();
 
-            Log($"키워드만 생성 시작... (모델: {selectedModel})");
+            Log($"키워드만 생성 시작... (모델: {selectedModel}, 키워드 버전: {selectedKeywordVersion})");
             StatusText.Text = "키워드 생성 중...";
             ProgressBar.IsIndeterminate = true;
 
-            var result = await bridge.RunPipelineAsync(inputFile, settings, progress, _cts.Token, model: selectedModel);
+            var result = await bridge.RunPipelineAsync(inputFile, settings, progress, _cts.Token, model: selectedModel, keywordVersion: selectedKeywordVersion);
             OnPipelineComplete(result);
         }
         catch (OperationCanceledException) { Log("작업 취소됨"); StatusText.Text = "취소됨"; }
@@ -726,12 +886,13 @@ public partial class MainWindow : Window
             var bridge = new PythonPipelineBridgeService(_v3Root, _pythonRoot);
             var progress = new Progress<string>(msg => Log(msg));
             var selectedModel = (ModelCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
+            var selectedKeywordVersion = GetSelectedKeywordVersion();
 
-            Log($"대표이미지만 생성 시작... (모델: {selectedModel})");
+            Log($"대표이미지만 생성 시작... (모델: {selectedModel}, 키워드 버전: {selectedKeywordVersion})");
             StatusText.Text = "대표이미지 생성 중...";
             ProgressBar.IsIndeterminate = true;
 
-            var result = await bridge.RunPipelineAsync(inputFile, settings, progress, _cts.Token, model: selectedModel);
+            var result = await bridge.RunPipelineAsync(inputFile, settings, progress, _cts.Token, model: selectedModel, keywordVersion: selectedKeywordVersion);
             OnPipelineComplete(result);
         }
         catch (OperationCanceledException) { Log("작업 취소됨"); StatusText.Text = "취소됨"; }
@@ -790,6 +951,7 @@ public partial class MainWindow : Window
         };
         _jobHistory?.Add(job);
         RefreshHistoryGrid();
+        ApplyHistoryToProducts();
     }
 
     private void HandlePipelineError(Exception ex)
@@ -874,8 +1036,9 @@ public partial class MainWindow : Window
             var bridge = new PythonPipelineBridgeService(_v3Root, _pythonRoot);
             var progress = new Progress<string>(msg => Log(msg));
             var selectedModel = (ModelCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
+            var selectedKeywordVersion = GetSelectedKeywordVersion();
 
-            Log($"테스트실행: 1차 가공 시작 (OCR + 이미지, LLM 스킵, 분할: {(chunkSize > 0 ? $"{chunkSize}개씩" : "안함")})...");
+            Log($"테스트실행: 1차 가공 시작 (OCR + 이미지, LLM 스킵, 분할: {(chunkSize > 0 ? $"{chunkSize}개씩" : "안함")}, 키워드 버전: {selectedKeywordVersion})...");
             StatusText.Text = "1차 가공 중 (LLM 스킵)...";
             ProgressBar.IsIndeterminate = true;
 
@@ -884,7 +1047,7 @@ public partial class MainWindow : Window
                 // Phase 1: 이미지 처리
                 Log("Phase 1: 이미지 다운로드 + 가공...");
                 var phase1 = await bridge.RunPipelineAsync(
-                    inputFile, settings, progress, _cts.Token, phase: "images", model: selectedModel);
+                    inputFile, settings, progress, _cts.Token, phase: "images", model: selectedModel, keywordVersion: selectedKeywordVersion);
 
                 _testOutputRoot = phase1.OutputRoot;
                 Log($"Phase 1 완료 — 이미지 폴더: {phase1.OutputRoot}");
@@ -899,7 +1062,7 @@ public partial class MainWindow : Window
                 var phase2Result = await bridge.RunPipelineAsync(
                     inputFile, settings, phase2Progress, _cts.Token,
                     phase: "ocr_only", exportRoot: phase1.OutputRoot, model: selectedModel,
-                    chunkSize: chunkSize);
+                    chunkSize: chunkSize, keywordVersion: selectedKeywordVersion);
 
                 OnTestOcrComplete(phase2Result);
             }
@@ -907,7 +1070,7 @@ public partial class MainWindow : Window
             {
                 var result = await bridge.RunPipelineAsync(
                     inputFile, settings, progress, _cts.Token, phase: "ocr_only", model: selectedModel,
-                    chunkSize: chunkSize);
+                    chunkSize: chunkSize, keywordVersion: selectedKeywordVersion);
                 OnTestOcrComplete(result);
             }
         }
@@ -946,20 +1109,16 @@ public partial class MainWindow : Window
         {
             var exportRoot = _testSkipOcrFolder;
 
-            // 기존 llm_chunks 폴더 정리
-            var chunksDir = Path.Combine(exportRoot, "llm_chunks");
-            if (Directory.Exists(chunksDir))
-                Directory.Delete(chunksDir, true);
-
             // Python bridge로 phase=ocr_only 실행 (이미 OCR 결과가 엑셀에 포함되어 있으므로 OCR은 스킵되고 skill.md + 청크만 생성됨)
             var bridgeService = new PythonPipelineBridgeService(_v3Root, _pythonRoot);
             var progress = new Progress<string>(msg => Log(msg));
             var selectedModel = (ModelCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
+            var selectedKeywordVersion = GetSelectedKeywordVersion();
 
             var result = await bridgeService.RunPipelineAsync(
                 uploadPath, BuildListingSettings(), progress, CancellationToken.None,
                 phase: "ocr_only", exportRoot: exportRoot, model: selectedModel,
-                chunkSize: chunkSize);
+                chunkSize: chunkSize, keywordVersion: selectedKeywordVersion);
 
             _testOutputRoot = exportRoot;
             OnTestOcrComplete(result);
@@ -979,9 +1138,194 @@ public partial class MainWindow : Window
     private List<string> _codexCommands = new();
     private List<string> _codexCommandsExt = new();
 
+    private static string GetKeywordVersionSuffix(string version)
+        => version switch
+        {
+            "1.0" => "v1_0",
+            "3.0" => "v3_0",
+            _ => "v2_0",
+        };
+
+    private static string GetKeywordVersionLabel(string version)
+        => version switch
+        {
+            "1.0" => "v1.0 확장형",
+            "3.0" => "v3.0 타겟형",
+            _ => "v2.0 근거우선",
+        };
+
+    private static string GetChunksRoot(string outputRoot)
+        => Path.Combine(outputRoot, "llm_chunks");
+
+    private static string GetActiveChunksMarkerPath(string outputRoot, string version)
+        => Path.Combine(GetChunksRoot(outputRoot), $"_active_{GetKeywordVersionSuffix(version)}.txt");
+
+    private string GetActiveChunksDir(string outputRoot, string? version = null)
+    {
+        var selectedVersion = version ?? GetSelectedKeywordVersion();
+        var versionSuffix = GetKeywordVersionSuffix(selectedVersion);
+        var chunksRoot = GetChunksRoot(outputRoot);
+        if (!Directory.Exists(chunksRoot))
+            return chunksRoot;
+
+        var markerPath = GetActiveChunksMarkerPath(outputRoot, selectedVersion);
+        try
+        {
+            if (File.Exists(markerPath))
+            {
+                var markedDir = File.ReadAllText(markerPath).Trim();
+                if (!string.IsNullOrWhiteSpace(markedDir) && Directory.Exists(markedDir))
+                    return markedDir;
+            }
+        }
+        catch { }
+
+        if (Directory.GetFiles(chunksRoot, "chunk_*.xlsx").Length > 0)
+            return chunksRoot;
+
+        var versionedSessions = Directory.GetDirectories(chunksRoot, $"session_*_{versionSuffix}_*")
+            .Where(dir => Directory.GetFiles(dir, "chunk_*.xlsx").Length > 0)
+            .OrderByDescending(Directory.GetCreationTimeUtc)
+            .ToArray();
+        if (versionedSessions.Length > 0)
+            return versionedSessions[0];
+
+        var anySessions = Directory.GetDirectories(chunksRoot, "session_*")
+            .Where(dir => Directory.GetFiles(dir, "chunk_*.xlsx").Length > 0)
+            .OrderByDescending(Directory.GetCreationTimeUtc)
+            .ToArray();
+        if (anySessions.Length > 0)
+            return anySessions[0];
+
+        return chunksRoot;
+    }
+
+    private IEnumerable<string> GetPreferredLlmDirs(string outputRoot, string version)
+    {
+        var versionSuffix = GetKeywordVersionSuffix(version);
+        var chunksRoot = GetChunksRoot(outputRoot);
+        var activeChunksDir = GetActiveChunksDir(outputRoot, version);
+
+        return new[]
+        {
+            Path.Combine(activeChunksDir, $"llm_result_{versionSuffix}"),
+            Path.Combine(outputRoot, $"llm_result_{versionSuffix}"),
+            Path.Combine(activeChunksDir, $"llm_result_ext_{versionSuffix}"),
+            Path.Combine(outputRoot, $"llm_result_ext_{versionSuffix}"),
+            Path.Combine(chunksRoot, $"llm_result_{versionSuffix}"),
+            Path.Combine(chunksRoot, $"llm_result_ext_{versionSuffix}"),
+            Path.Combine(activeChunksDir, "llm_result"),
+            Path.Combine(outputRoot, "llm_result"),
+            Path.Combine(activeChunksDir, "llm_result_ext"),
+            Path.Combine(outputRoot, "llm_result_ext"),
+            Path.Combine(chunksRoot, "llm_result"),
+            Path.Combine(chunksRoot, "llm_result_ext"),
+        }.Distinct().Where(Directory.Exists);
+    }
+
+    private static string GetKeywordVersionCommandGuide(string version, bool extended)
+    {
+        if (version == "1.0")
+        {
+            return extended
+                ? "키워드 버전 1.0 확장형으로 처리해. 핵심상품명은 맨 앞에 두고, 온토픽 범위에서만 실무 유사어와 사용처를 조금 더 활용하되 다른 상품군, 오타 확장, 과장 문구는 금지해."
+                : "키워드 버전 1.0 확장형으로 처리해. 핵심상품명은 맨 앞에 두고, 온토픽 범위에서 검색 커버리지를 조금 더 확보하되 다른 상품군, 오타 확장, 과장 문구는 금지해.";
+        }
+
+        if (version == "3.0")
+        {
+            return extended
+                ? "키워드 버전 3.0 타겟형으로 처리해. 근거는 원본 상품명과 OCR결과 시트만 사용하고, 외부 검색/연관어/자동완성은 절대 금지해. 단위 없는 순수 숫자 토큰(801, 2024 같은 제품코드·연도·바코드)은 제외하되 단위 붙은 규격(35mm, 2M, 500ml)은 유지해. A마켓은 기능·규격·재질 중심으로 확장하고, B마켓은 A의 부분집합이 아니라 핵심상품명·규격만 공유하며 용도·사용처·대상 축으로 독립 패키징해. A 제목 뒷부분과 B 제목 뒷부분 토큰이 50% 이상 겹치지 않게 해."
+                : "키워드 버전 3.0 타겟형으로 처리해. 근거는 상품명과 OCR뿐. 외부 검색/연관어 금지. OCR 숫자 필터(단위 붙은 규격 유지, 순수 숫자 제외) 적용. A=기능/규격 확장, B=용도/사용처 독립 패키징. A와 B 제목 뒷부분은 50% 이상 겹치면 안 됨.";
+        }
+
+        return extended
+            ? "키워드 버전 2.0 근거 우선 규칙으로 처리해. evidence-first로 상품명과 OCR 근거 안에서만 확장하고, 짧아도 무관 확장과 오타 확장은 금지해."
+            : "키워드 버전 2.0 근거 우선 규칙으로 처리해. evidence-first로 상품명과 OCR 근거 안에서만 조립하고, 짧아도 무관 확장과 오타 확장은 금지해.";
+    }
+
+    private static string BuildTestCodexCommand(string workingDir, string instruction)
+        => $"cd \"{workingDir}\"; codex --full-auto \"{instruction}\"";
+
+    private void RefreshTestCodexCommands(string outputRoot)
+    {
+        var selectedKeywordVersion = GetSelectedKeywordVersion();
+        var versionSuffix = GetKeywordVersionSuffix(selectedKeywordVersion);
+        var versionLabel = GetKeywordVersionLabel(selectedKeywordVersion);
+
+        var skillMd = Path.Combine(outputRoot, "keyword_skill.md");
+        var skillMdExt = Path.Combine(outputRoot, "keyword_skill_extended.md");
+        if (File.Exists(skillMd) && File.Exists(skillMdExt))
+            TestSkillMdPathText.Text = $"keyword_skill.md + extended 생성됨 · 현재 명령 버전 {selectedKeywordVersion}";
+        else if (File.Exists(skillMd))
+            TestSkillMdPathText.Text = $"keyword_skill.md 생성됨 · 현재 명령 버전 {selectedKeywordVersion}";
+        else
+            TestSkillMdPathText.Text = $"현재 명령 버전 {selectedKeywordVersion}";
+
+        _codexCommands.Clear();
+        _codexCommandsExt.Clear();
+
+        var chunksDir = GetActiveChunksDir(outputRoot, selectedKeywordVersion);
+        if (Directory.Exists(chunksDir))
+        {
+            var chunkFiles = Directory.GetFiles(chunksDir, "chunk_*.xlsx");
+            if (chunkFiles.Length > 0)
+            {
+                Array.Sort(chunkFiles);
+                Directory.CreateDirectory(Path.Combine(chunksDir, $"llm_result_{versionSuffix}"));
+                Directory.CreateDirectory(Path.Combine(chunksDir, $"llm_result_ext_{versionSuffix}"));
+
+                TestCodexCmdTitle.Text = $"Codex 병렬 실행 ({chunkFiles.Length}개 세션 × 2세트, {versionLabel})";
+                foreach (var cf in chunkFiles)
+                {
+                    var fileName = Path.GetFileName(cf);
+                    var outputFileName = $"{Path.GetFileNameWithoutExtension(fileName)}_llm_{versionSuffix}.xlsx";
+                    var cmd = BuildTestCodexCommand(
+                        chunksDir,
+                        $"keyword_skill.md 지시서에 따라 {fileName} 파일의 키워드를 채워서 llm_result_{versionSuffix}/{outputFileName} 로 저장해. {GetKeywordVersionCommandGuide(selectedKeywordVersion, extended: false)}");
+                    _codexCommands.Add(cmd);
+
+                    var cmdExt = BuildTestCodexCommand(
+                        chunksDir,
+                        $"keyword_skill_extended.md 지시서에 따라 {fileName} 파일의 키워드를 채워서 llm_result_ext_{versionSuffix}/{outputFileName} 로 저장해. {GetKeywordVersionCommandGuide(selectedKeywordVersion, extended: true)}");
+                    _codexCommandsExt.Add(cmdExt);
+                }
+
+                Log($"분할 엑셀 {chunkFiles.Length}개 → 기본/확장 2세트 명령어 생성 ({versionLabel})");
+                BuildCodexCommandCards();
+                TestCodexCmdPanel.Visibility = Visibility.Visible;
+                StatusText.Text = $"1차 가공 완료 — LLM 키워드 처리 대기 ({versionLabel})";
+                return;
+            }
+        }
+
+        Directory.CreateDirectory(Path.Combine(outputRoot, $"llm_result_{versionSuffix}"));
+        Directory.CreateDirectory(Path.Combine(outputRoot, $"llm_result_ext_{versionSuffix}"));
+
+        var uploadFile = !string.IsNullOrWhiteSpace(_lastOutputFile) &&
+                         string.Equals(Path.GetDirectoryName(_lastOutputFile), outputRoot, StringComparison.OrdinalIgnoreCase)
+            ? _lastOutputFile
+            : FindLatestFile(outputRoot, "업로드용_*.xlsx");
+        var uploadName = !string.IsNullOrWhiteSpace(uploadFile) ? Path.GetFileName(uploadFile) : "업로드용 엑셀";
+
+        _codexCommands.Add(BuildTestCodexCommand(
+            outputRoot,
+            $"keyword_skill.md 지시서에 따라 {uploadName} 파일의 키워드를 채워서 llm_result_{versionSuffix}/ 아래에 저장해. 파일명은 입력 파일명 기준으로 `_llm_{versionSuffix}.xlsx` 형식으로 저장해. {GetKeywordVersionCommandGuide(selectedKeywordVersion, extended: false)}"));
+        _codexCommandsExt.Add(BuildTestCodexCommand(
+            outputRoot,
+            $"keyword_skill_extended.md 지시서에 따라 {uploadName} 파일의 키워드를 채워서 llm_result_ext_{versionSuffix}/ 아래에 저장해. 파일명은 입력 파일명 기준으로 `_llm_{versionSuffix}.xlsx` 형식으로 저장해. {GetKeywordVersionCommandGuide(selectedKeywordVersion, extended: true)}"));
+
+        TestCodexCmdTitle.Text = $"Codex 실행 (기본 + 확장, {versionLabel})";
+        Log($"keyword_skill.md + extended → Codex에서 실행 ({versionLabel})");
+        BuildCodexCommandCards();
+        TestCodexCmdPanel.Visibility = Visibility.Visible;
+        StatusText.Text = $"1차 가공 완료 — LLM 키워드 처리 대기 ({versionLabel})";
+    }
+
     private void OnTestOcrComplete(PythonPipelineBridgeResult result)
     {
         _testOutputRoot = result.OutputRoot;
+        _lastOutputFile = result.OutputFile;
         TestOutputPathText.Text = $"결과 폴더: {result.OutputRoot}";
         TestOpenOutputButton.IsEnabled = true;
 
@@ -994,60 +1338,22 @@ public partial class MainWindow : Window
         if (Directory.Exists(listingDir) && Directory.GetDirectories(listingDir).Length > 0)
             LoadListingImagesFromRoot(result.OutputRoot);
 
-        var skillMd = Path.Combine(result.OutputRoot, "keyword_skill.md");
-        var skillMdExt = Path.Combine(result.OutputRoot, "keyword_skill_extended.md");
-        if (File.Exists(skillMd) && File.Exists(skillMdExt))
-            TestSkillMdPathText.Text = $"keyword_skill.md + extended 생성됨";
-        else if (File.Exists(skillMd))
-            TestSkillMdPathText.Text = $"keyword_skill.md 생성됨";
+        RefreshTestCodexCommands(result.OutputRoot);
 
-        var llmDir = Path.Combine(result.OutputRoot, "llm_result");
-        var llmDirExt = Path.Combine(result.OutputRoot, "llm_result_ext");
-        Directory.CreateDirectory(llmDir);
-        Directory.CreateDirectory(llmDirExt);
-
-        // Codex 병렬 실행 명령어 생성 (기본 + 확장)
-        _codexCommands.Clear();
-        _codexCommandsExt.Clear();
-        var chunksDir = Path.Combine(result.OutputRoot, "llm_chunks");
-        if (Directory.Exists(chunksDir))
-        {
-            var chunkFiles = Directory.GetFiles(chunksDir, "chunk_*.xlsx");
-            if (chunkFiles.Length > 0)
-            {
-                Array.Sort(chunkFiles);
-                TestCodexCmdTitle.Text = $"Codex 병렬 실행 ({chunkFiles.Length}개 세션 × 2세트)";
-                foreach (var cf in chunkFiles)
-                {
-                    var fileName = Path.GetFileName(cf);
-                    var cmd = $"cd \"{chunksDir}\"; codex --full-auto \"keyword_skill.md 지시서에 따라 {fileName} 파일의 키워드를 채워서 llm_result/{fileName.Replace(".xlsx", "_llm.xlsx")} 로 저장해\"";
-                    _codexCommands.Add(cmd);
-                    var cmdExt = $"cd \"{chunksDir}\"; codex --full-auto \"keyword_skill_extended.md 지시서에 따라 {fileName} 파일의 키워드를 채워서 llm_result_ext/{fileName.Replace(".xlsx", "_llm.xlsx")} 로 저장해\"";
-                    _codexCommandsExt.Add(cmdExt);
-                }
-                Log($"분할 엑셀 {chunkFiles.Length}개 → 기본/확장 2세트 명령어 생성");
-            }
-        }
-
-        if (_codexCommands.Count == 0)
-        {
-            // 분할 없이 단일 파일
-            var cmd = $"cd \"{result.OutputRoot}\"; codex --full-auto \"keyword_skill.md 지시서대로 실행해\"";
-            _codexCommands.Add(cmd);
-            var cmdExt = $"cd \"{result.OutputRoot}\"; codex --full-auto \"keyword_skill_extended.md 지시서대로 실행해\"";
-            _codexCommandsExt.Add(cmdExt);
-            TestCodexCmdTitle.Text = "Codex 실행 (기본 + 확장)";
-            Log($"keyword_skill.md + extended → Codex에서 실행");
-        }
-
-        // UI에 명령어 카드 생성 (2세트)
-        BuildCodexCommandCards();
-        TestCodexCmdPanel.Visibility = Visibility.Visible;
+        var selectedKeywordVersion = GetSelectedKeywordVersion();
+        var versionSuffix = GetKeywordVersionSuffix(selectedKeywordVersion);
+        var chunksDir = GetActiveChunksDir(result.OutputRoot, selectedKeywordVersion);
+        var hasChunks = Directory.Exists(chunksDir) && Directory.GetFiles(chunksDir, "chunk_*.xlsx").Length > 0;
+        var llmDir = hasChunks
+            ? Path.Combine(chunksDir, $"llm_result_{versionSuffix}")
+            : Path.Combine(result.OutputRoot, $"llm_result_{versionSuffix}");
+        var llmDirExt = hasChunks
+            ? Path.Combine(chunksDir, $"llm_result_ext_{versionSuffix}")
+            : Path.Combine(result.OutputRoot, $"llm_result_ext_{versionSuffix}");
 
         Log($"1차 가공 완료!");
         Log($"기본 결과 → {llmDir}");
         Log($"확장 결과 → {llmDirExt}");
-        StatusText.Text = "1차 가공 완료 — LLM 키워드 처리 대기 (기본/확장 2세트)";
 
         Activate();
         System.Media.SystemSounds.Asterisk.Play();
@@ -1166,7 +1472,7 @@ public partial class MainWindow : Window
     private void TestOpenChunksFolder_Click(object sender, RoutedEventArgs e)
     {
         if (string.IsNullOrEmpty(_testOutputRoot)) return;
-        var chunksDir = Path.Combine(_testOutputRoot, "llm_chunks");
+        var chunksDir = GetActiveChunksDir(_testOutputRoot, GetSelectedKeywordVersion());
         if (Directory.Exists(chunksDir))
             Process.Start(new ProcessStartInfo("explorer.exe", chunksDir));
     }
@@ -1195,14 +1501,11 @@ public partial class MainWindow : Window
 
     private void TestLoadLlmResult_Click(object sender, RoutedEventArgs e)
     {
-        // llm_chunks/llm_result 또는 export_root/llm_result 우선 탐색
+        // 현재 선택된 버전 결과 폴더를 우선 탐색
         var startDir = "";
         if (_testOutputRoot != null)
         {
-            var chunksLlm = Path.Combine(_testOutputRoot, "llm_chunks", "llm_result");
-            var rootLlm = Path.Combine(_testOutputRoot, "llm_result");
-            if (Directory.Exists(chunksLlm)) startDir = chunksLlm;
-            else if (Directory.Exists(rootLlm)) startDir = rootLlm;
+            startDir = GetPreferredLlmDirs(_testOutputRoot, GetSelectedKeywordVersion()).FirstOrDefault() ?? "";
         }
 
         var dlg = new Microsoft.Win32.OpenFileDialog
@@ -1248,11 +1551,27 @@ public partial class MainWindow : Window
             TestNaverUploadButton.IsEnabled = true;
 
             foreach (var f in _testLlmResultFiles)
+            {
                 Log($"LLM 결과 파일: {Path.GetFileName(f)}");
+                if (!HasBMarketSheet(f))
+                    Log($"  ⚠ B마켓 시트 없음: {Path.GetFileName(f)} — 준비몰 신규등록은 이 파일에서 스킵됩니다.");
+            }
         }
     }
 
-    private async void TestCafe24Create_Click(object sender, RoutedEventArgs e)
+    /// <summary>엑셀 파일에 'B마켓' 시트가 있는지 확인</summary>
+    private static bool HasBMarketSheet(string excelPath)
+    {
+        try
+        {
+            using var wb = WorkbookFileLoader.OpenReadOnly(excelPath);
+            return wb.Worksheets.Any(ws =>
+                string.Equals(ws.Name.Trim(), "B마켓", StringComparison.OrdinalIgnoreCase));
+        }
+        catch { return false; }
+    }
+
+    private void TestCafe24Create_Click(object sender, RoutedEventArgs e)
     {
         var files = _testLlmResultFiles.Where(File.Exists).ToList();
         if (files.Count == 0)
@@ -1261,102 +1580,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        var exportRoot = _testOutputRoot ?? Path.GetDirectoryName(files[0])!;
-        var fileListText = files.Count <= 3
-            ? string.Join("\n", files.Select(f => Path.GetFileName(f)))
-            : $"{Path.GetFileName(files[0])} 외 {files.Count - 1}개";
-
-        var confirm = MessageBox.Show(
-            $"Cafe24에 신규상품을 등록합니다.\n\n" +
-            $"LLM 결과 파일: {files.Count}개\n{fileListText}\n" +
-            $"결과 폴더: {exportRoot}\n\n" +
-            "파일을 순차적으로 처리합니다. 계속하시겠습니까?",
-            "Cafe24 신규등록 확인", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (confirm != MessageBoxResult.Yes) return;
-
-        TestCafe24CreateButton.IsEnabled = false;
-        _cts = new CancellationTokenSource();
-
-        int totalCreated = 0, totalError = 0, totalSkipped = 0;
-
-        try
-        {
-            ProgressBar.IsIndeterminate = true;
-            var createService = new Cafe24CreateProductService(_v3Root, _legacyRoot);
-            var progress = new Progress<string>(msg => Log(msg));
-
-            for (int i = 0; i < files.Count; i++)
-            {
-                var file = files[i];
-
-                async Task RunReadyMarketCreateAsync()
-                {
-                    StatusText.Text = $"준비몰 신규등록 중... ({i + 1}/{files.Count}) {Path.GetFileName(file)}";
-                    Log($"── [준비몰] 파일 {i + 1}/{files.Count}: {Path.GetFileName(file)} 처리 시작 ──");
-                    var resultB = await createService.CreateBMarketAsync(file, exportRoot, progress, _cts.Token);
-                    totalCreated += resultB.CreatedCount;
-                    totalError += resultB.ErrorCount;
-                    totalSkipped += resultB.SkippedCount;
-                    if (resultB.TotalCount > 0)
-                    {
-                        Log($"── [준비몰] 파일 {i + 1} 완료: 등록 {resultB.CreatedCount} / 오류 {resultB.ErrorCount} / 스킵 {resultB.SkippedCount} ──");
-                    }
-                    else
-                    {
-                        Log($"── [준비몰] 파일 {i + 1} 완료: 등록 대상 없음 ──");
-                    }
-                }
-
-                if (runHomeMarket)
-                {
-                    StatusText.Text = $"홈런마켓 신규등록 중... ({i + 1}/{files.Count}) {Path.GetFileName(file)}";
-                    Log($"── [홈런마켓] 파일 {i + 1}/{files.Count}: {Path.GetFileName(file)} 처리 시작 ──");
-                    var result = await createService.CreateAsync(file, exportRoot, progress, _cts.Token);
-                    totalCreated += result.CreatedCount;
-                    totalError += result.ErrorCount;
-                    totalSkipped += result.SkippedCount;
-                    Log($"── [홈런마켓] 파일 {i + 1} 완료: 등록 {result.CreatedCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount} ──");
-                }
-
-                if (runReadyMarket)
-                {
-                    if (runHomeMarket)
-                    {
-                        try
-                        {
-                            await RunReadyMarketCreateAsync();
-                        }
-                        catch (Cafe24ReauthenticationRequiredException exB)
-                        {
-                            Log($"[준비몰] 재인증 필요: {exB.Message}");
-                        }
-                        catch (Exception exB)
-                        {
-                            Log($"[준비몰] 신규등록 오류: {exB.Message}");
-                        }
-                    }
-                    else
-                    {
-                        await RunReadyMarketCreateAsync();
-                    }
-                }
-            }
-
-            Log($"선택한 몰 신규등록 완료: 대상 {marketLabel} / 등록 {totalCreated} / 오류 {totalError} / 스킵 {totalSkipped} (파일 {files.Count}개)");
-            StatusText.Text = $"신규등록 완료 ({marketLabel}, 등록: {totalCreated}, 파일: {files.Count}개)";
-        }
-        catch (OperationCanceledException) { Log("신규등록 취소됨"); StatusText.Text = "취소됨"; }
-        catch (Exception ex)
-        {
-            Log($"신규등록 오류: {ex.Message}");
-            MessageBox.Show(ex.Message, "Cafe24 신규등록 오류", MessageBoxButton.OK, MessageBoxImage.Error);
-            StatusText.Text = "신규등록 오류";
-        }
-        finally
-        {
-            TestCafe24CreateButton.IsEnabled = true;
-            ProgressBar.IsIndeterminate = false;
-        }
+        LoadBasicCafe24ProductList(files[0]);
+        Log($"상품 목록 {_basicCafe24Items.Count}개 로드 — 항목 선택 후 '신규등록 실행' 버튼을 클릭하세요.");
     }
 
     private void TestCafe24Upload_Click(object sender, RoutedEventArgs e)
@@ -1462,11 +1687,6 @@ public partial class MainWindow : Window
             var confirm = MessageBox.Show(
                 $"네이버 스마트스토어에 상품을 실제 등록합니다.\n\n파일: {Path.GetFileName(sourcePath)}\n\n계속하시겠습니까?",
                 "네이버 실제 등록 확인", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (!TryGetSelectedCafe24Markets(out var runHomeMarket, out var runReadyMarket, out var marketLabel))
-        {
-            return;
-        }
-
             if (confirm != MessageBoxResult.Yes) return;
         }
 
@@ -1474,7 +1694,6 @@ public partial class MainWindow : Window
         _cts = new CancellationTokenSource();
 
         try
-            $"대상 몰: {marketLabel}\n" +
         {
             StatusText.Text = dryRun ? "네이버 DRY RUN 중..." : "네이버 등록 중...";
             ProgressBar.IsIndeterminate = true;
@@ -1603,6 +1822,7 @@ public partial class MainWindow : Window
 
         var confirm = MessageBox.Show(
             $"Cafe24에 이미지 업로드 + 옵션가격을 반영합니다.\n\n" +
+            $"대상 몰: {marketLabel}\n" +
             $"업로드 파일: {Path.GetFileName(uploadFile)}\n" +
             $"결과 폴더: {_lastOutputRoot}\n\n계속하시겠습니까?",
             "Cafe24 업로드 확인", MessageBoxButton.YesNo, MessageBoxImage.Question);
@@ -1625,6 +1845,11 @@ public partial class MainWindow : Window
 
             var uploadService = new Cafe24UploadService(_v3Root, _legacyRoot);
             var progress = new Progress<string>(msg => Log(msg));
+            var totalCount = 0;
+            var totalSuccess = 0;
+            var totalError = 0;
+            var totalSkipped = 0;
+            string? lastLogPath = null;
 
             void Accumulate(Cafe24UploadResult result)
             {
@@ -1641,7 +1866,7 @@ public partial class MainWindow : Window
             async Task RunReadyMarketUploadAsync()
             {
                 StatusText.Text = "준비몰 Cafe24 업로드 중...";
-                var resultB = await uploadService.UploadBMarketAsync(uploadFile, _lastOutputRoot, options, progress, _cts.Token);
+                var resultB = await uploadService.UploadBMarketAsync(uploadFile, _lastOutputRoot, options, progress, _cts.Token, _bMarketTokenPath);
                 Accumulate(resultB);
                 if (resultB.TotalCount > 0)
                 {
@@ -1671,7 +1896,8 @@ public partial class MainWindow : Window
                     }
                     catch (Cafe24ReauthenticationRequiredException exB)
                     {
-                        Log($"준비몰 Cafe24 재인증 필요: {exB.Message}");
+                        Log($"준비몰 Cafe24 토큰 오류: {exB.Message}");
+                        MessageBox.Show("준비몰 토큰이 만료됐습니다. 설정 탭에서 토큰 파일을 교체해 주세요.", "준비몰 토큰 오류", MessageBoxButton.OK, MessageBoxImage.Warning);
                     }
                     catch (Exception exB)
                     {
@@ -1696,12 +1922,9 @@ public partial class MainWindow : Window
         catch (OperationCanceledException) { Log("업로드 취소됨"); StatusText.Text = "취소됨"; }
         catch (Cafe24ReauthenticationRequiredException ex)
         {
-            Log($"Cafe24 재인증 필요: {ex.Message}");
-            StatusText.Text = "재인증 필요";
-            await PromptCafe24ReauthenticationAsync(
-                "Cafe24 재인증 필요",
-                ex.Message,
-                "새 토큰을 저장했습니다. Cafe24 업로드를 다시 실행해 주세요.");
+            Log($"Cafe24 토큰 오류: {ex.Message}");
+            StatusText.Text = "토큰 오류";
+            MessageBox.Show("Cafe24 토큰이 만료됐습니다. 설정 탭에서 토큰 파일을 교체해 주세요.", "Cafe24 토큰 오류", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {
@@ -1738,11 +1961,35 @@ public partial class MainWindow : Window
             return;
         }
 
+        // 준비몰 선택 시 B마켓 시트 존재 여부 미리 확인
+        var bMarketNote = "";
+        if (runReadyMarket && !HasBMarketSheet(uploadFile))
+            bMarketNote = "\n\n⚠ 업로드 파일에 B마켓 시트가 없습니다.\n   준비몰 신규등록은 스킵됩니다.";
+
         var confirm = MessageBox.Show(
             $"Cafe24에 신규 상품을 등록합니다.\n\n" +
-            $"업로드 파일: {Path.GetFileName(uploadFile)}\n\n계속하시겠습니까?",
+            $"대상 몰: {marketLabel}\n" +
+            $"업로드 파일: {Path.GetFileName(uploadFile)}{bMarketNote}\n\n계속하시겠습니까?",
             "신규상품 등록 확인", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (confirm != MessageBoxResult.Yes) return;
+
+        // 네이버(홈런마켓) 중복 확인
+        if (runHomeMarket)
+        {
+            StatusText.Text = "네이버 중복 확인 중...";
+            var duplicateInfo = await CheckNaverDuplicatesAsync(uploadFile);
+            if (duplicateInfo.Count > 0)
+            {
+                var dupLines = duplicateInfo
+                    .Select(d => $"  • {d.GsCode}  {d.ProductName}")
+                    .ToList();
+                var msg = $"다음 {duplicateInfo.Count}개 상품이 네이버(홈런마켓)에 이미 등록되어 있습니다:\n\n" +
+                          string.Join("\n", dupLines) +
+                          "\n\n이미 등록된 상품도 포함하여 계속 진행하시겠습니까?";
+                var dupResult = MessageBox.Show(msg, "네이버 중복 확인", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (dupResult != MessageBoxResult.Yes) return;
+            }
+        }
 
         Cafe24CreateButton.IsEnabled = false;
         _cts = new CancellationTokenSource();
@@ -1755,12 +2002,20 @@ public partial class MainWindow : Window
             var options = BuildUploadOptions();
             var createService = new Cafe24CreateProductService(_v3Root, _legacyRoot);
             var progress = new Progress<string>(msg => Log(msg));
+            var totalCreated = 0;
+            var totalError = 0;
+            var totalSkipped = 0;
+
+            // 체크된 GS 코드만 등록 (목록이 있을 때)
+            IReadOnlySet<string>? selectedGs = _cafe24Items.Count > 0
+                ? new HashSet<string>(_cafe24Items.Where(i => i.IsChecked).Select(i => i.GsCode), StringComparer.OrdinalIgnoreCase)
+                : null;
 
             async Task RunReadyMarketCreateAsync()
             {
                 StatusText.Text = "준비몰 신규상품 등록 중...";
                 Log("── [준비몰] 신규등록 시작 ──");
-                var resultB = await createService.CreateBMarketAsync(uploadFile, _lastOutputRoot, progress, _cts.Token);
+                var resultB = await createService.CreateBMarketAsync(uploadFile, _lastOutputRoot, progress, _cts.Token, _bMarketTokenPath, selectedGs);
                 totalCreated += resultB.CreatedCount;
                 totalError += resultB.ErrorCount;
                 totalSkipped += resultB.SkippedCount;
@@ -1777,10 +2032,17 @@ public partial class MainWindow : Window
             if (runHomeMarket)
             {
                 StatusText.Text = "홈런마켓 신규상품 등록 중...";
-                var result = await createService.CreateAsync(uploadFile, _lastOutputRoot, progress, _cts.Token);
+                var aTokenPath = string.IsNullOrWhiteSpace(SettingsTokenPath.Text) ? null : SettingsTokenPath.Text.Trim();
+                var result = await createService.CreateAsync(uploadFile, _lastOutputRoot, progress, _cts.Token, tokenPath: aTokenPath, allowedGsCodes: selectedGs);
                 totalCreated += result.CreatedCount;
                 totalError += result.ErrorCount;
                 totalSkipped += result.SkippedCount;
+                // 업로드 이력 기록
+                foreach (var item in _cafe24Items.Where(i => i.IsChecked))
+                {
+                    _uploadHistory.Mark(item.GsCode, "homemarket");
+                    item.HomeMarketStatus = UploadProductItem.FormatDate(DateTime.Now);
+                }
                 Log($"[홈런마켓] 신규등록 완료: 생성 {result.CreatedCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount}");
             }
 
@@ -1794,7 +2056,8 @@ public partial class MainWindow : Window
                     }
                     catch (Cafe24ReauthenticationRequiredException exB)
                     {
-                        Log($"[준비몰] 재인증 필요: {exB.Message}");
+                        Log($"[준비몰] 토큰 오류: {exB.Message}");
+                        MessageBox.Show("준비몰 토큰이 만료됐습니다. 설정 탭에서 토큰 파일을 교체해 주세요.", "준비몰 토큰 오류", MessageBoxButton.OK, MessageBoxImage.Warning);
                     }
                     catch (Exception exB)
                     {
@@ -1812,12 +2075,9 @@ public partial class MainWindow : Window
         catch (OperationCanceledException) { Log("등록 취소됨"); StatusText.Text = "취소됨"; }
         catch (Cafe24ReauthenticationRequiredException ex)
         {
-            Log($"Cafe24 재인증 필요: {ex.Message}");
-            StatusText.Text = "재인증 필요";
-            await PromptCafe24ReauthenticationAsync(
-                "Cafe24 재인증 필요",
-                ex.Message,
-                "새 토큰을 저장했습니다. Cafe24 신규등록을 다시 실행해 주세요.");
+            Log($"Cafe24 토큰 오류: {ex.Message}");
+            StatusText.Text = "토큰 오류";
+            MessageBox.Show("Cafe24 토큰이 만료됐습니다. 설정 탭에서 토큰 파일을 교체해 주세요.", "Cafe24 토큰 오류", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {
@@ -1830,10 +2090,6 @@ public partial class MainWindow : Window
             ProgressBar.IsIndeterminate = false;
         }
     }
-
-    // ═══════════════════════════════════════
-    // ── 쿠팡 업로드 ──────────────────────
-    // ═══════════════════════════════════════
 
     private void CoupangSource_DragOver(object sender, DragEventArgs e)
     {
@@ -1851,7 +2107,6 @@ public partial class MainWindow : Window
             CoupangSourcePath.Text = files[0];
         }
     }
-            $"대상 몰: {marketLabel}\n" +
 
     private void CoupangBrowseSource_Click(object sender, RoutedEventArgs e)
     {
@@ -1875,11 +2130,6 @@ public partial class MainWindow : Window
             // _lastOutputRoot에서 자동 탐색
             if (!string.IsNullOrEmpty(_lastOutputRoot) && Directory.Exists(_lastOutputRoot))
             {
-            var totalCount = 0;
-            var totalSuccess = 0;
-            var totalError = 0;
-            var totalSkipped = 0;
-            string? lastLogPath = null;
                 var found = FindLatestFile(_lastOutputRoot, "업로드용_*.xlsx");
                 if (found != null)
                 {
@@ -1917,17 +2167,27 @@ public partial class MainWindow : Window
             ProgressBar.IsIndeterminate = true;
             Log($"쿠팡 업로드 시작: {Path.GetFileName(sourcePath)} (DRY RUN: {dryRun})");
 
-            var options = new CoupangUploadOptions
-            {
-                RowStart = ParseInt(CoupangRowStart, 0),
-                RowEnd = ParseInt(CoupangRowEnd, 0),
-                DryRun = dryRun,
-            };
+            var options = new CoupangUploadOptions { DryRun = dryRun };
+
+            // 체크된 행만 처리 (목록이 있을 때)
+            IReadOnlySet<int>? selectedRows = _coupangItems.Count > 0
+                ? new HashSet<int>(_coupangItems.Where(i => i.IsChecked).Select(i => i.RowNum))
+                : null;
 
             var service = new CoupangUploadService();
             var progress = new Progress<string>(msg => Log(msg));
 
-            var result = await service.UploadAsync(sourcePath, options, progress, _cts.Token);
+            var result = await service.UploadAsync(sourcePath, options, progress, _cts.Token, selectedRows);
+
+            // 업로드 이력 기록
+            if (!dryRun)
+            {
+                foreach (var item in _coupangItems.Where(i => i.IsChecked && !string.IsNullOrEmpty(i.GsCode)))
+                {
+                    _uploadHistory.Mark(item.GsCode, "coupang");
+                    item.CoupangStatus = UploadProductItem.FormatDate(DateTime.Now);
+                }
+            }
 
             // 결과 그리드
             var gridItems = result.Items.Select(item => new CoupangResultRow
@@ -1951,7 +2211,6 @@ public partial class MainWindow : Window
             MessageBox.Show(ex.Message, "쿠팡 업로드 오류", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
-            $"대상 몰: {marketLabel}\n" +
         {
             CoupangUploadButton.IsEnabled = true;
             ProgressBar.IsIndeterminate = false;
@@ -1967,9 +2226,6 @@ public partial class MainWindow : Window
         public string Error { get; set; } = "";
     }
 
-            var totalCreated = 0;
-            var totalError = 0;
-            var totalSkipped = 0;
     private void LoadUploadLog(string? logPath)
     {
         if (string.IsNullOrEmpty(logPath) || !File.Exists(logPath)) return;
@@ -2337,6 +2593,11 @@ public partial class MainWindow : Window
         var job = GetSelectedJob();
         if (job == null) return;
 
+        if (!TryGetSelectedCafe24Markets(out var runHomeMarket, out var runReadyMarket, out var marketLabel))
+        {
+            return;
+        }
+
         if (!Directory.Exists(job.OutputRoot))
         {
             MessageBox.Show("결과 폴더가 존재하지 않습니다.", "알림"); return;
@@ -2350,6 +2611,7 @@ public partial class MainWindow : Window
 
         var confirm = MessageBox.Show(
             $"Cafe24에 이미지 + 옵션가격을 업로드합니다.\n\n" +
+            $"대상 몰: {marketLabel}\n" +
             $"파일: {Path.GetFileName(uploadFile)}\n" +
             $"폴더: {job.OutputRoot}\n\n계속하시겠습니까?",
             "Cafe24 업로드 확인", MessageBoxButton.YesNo, MessageBoxImage.Question);
@@ -2376,11 +2638,28 @@ public partial class MainWindow : Window
 
             var uploadService = new Cafe24UploadService(_v3Root, _legacyRoot);
             var progress = new Progress<string>(msg => Log(msg));
+            var totalCount = 0;
+            var totalSuccess = 0;
+            var totalError = 0;
+            var totalSkipped = 0;
+            string? lastLogPath = null;
+
+            void Accumulate(Cafe24UploadResult result)
+            {
+                totalCount += result.TotalCount;
+                totalSuccess += result.SuccessCount;
+                totalError += result.ErrorCount;
+                totalSkipped += result.SkippedCount;
+                if (!string.IsNullOrWhiteSpace(result.LogPath))
+                {
+                    lastLogPath = result.LogPath;
+                }
+            }
 
             async Task RunReadyMarketUploadAsync()
             {
                 StatusText.Text = "준비몰 Cafe24 업로드 중...";
-                var resultB = await uploadService.UploadBMarketAsync(uploadFile, job.OutputRoot, options, progress, _cts.Token);
+                var resultB = await uploadService.UploadBMarketAsync(uploadFile, job.OutputRoot, options, progress, _cts.Token, _bMarketTokenPath);
                 Accumulate(resultB);
                 if (resultB.TotalCount > 0)
                 {
@@ -2410,7 +2689,8 @@ public partial class MainWindow : Window
                     }
                     catch (Cafe24ReauthenticationRequiredException exB)
                     {
-                        Log($"준비몰 Cafe24 재인증 필요: {exB.Message}");
+                        Log($"준비몰 Cafe24 토큰 오류: {exB.Message}");
+                        MessageBox.Show("준비몰 토큰이 만료됐습니다. 설정 탭에서 토큰 파일을 교체해 주세요.", "준비몰 토큰 오류", MessageBoxButton.OK, MessageBoxImage.Warning);
                     }
                     catch (Exception exB)
                     {
@@ -2436,12 +2716,9 @@ public partial class MainWindow : Window
         catch (OperationCanceledException) { Log("업로드 취소됨"); StatusText.Text = "취소됨"; }
         catch (Cafe24ReauthenticationRequiredException ex)
         {
-            Log($"Cafe24 재인증 필요: {ex.Message}");
-            StatusText.Text = "재인증 필요";
-            await PromptCafe24ReauthenticationAsync(
-                "Cafe24 재인증 필요",
-                ex.Message,
-                "새 토큰을 저장했습니다. Cafe24 업로드를 다시 실행해 주세요.");
+            Log($"Cafe24 토큰 오류: {ex.Message}");
+            StatusText.Text = "토큰 오류";
+            MessageBox.Show("Cafe24 토큰이 만료됐습니다. 설정 탭에서 토큰 파일을 교체해 주세요.", "Cafe24 토큰 오류", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {
@@ -2461,6 +2738,11 @@ public partial class MainWindow : Window
         var job = GetSelectedJob();
         if (job == null) return;
 
+        if (!TryGetSelectedCafe24Markets(out var runHomeMarket, out var runReadyMarket, out var marketLabel))
+        {
+            return;
+        }
+
         if (!Directory.Exists(job.OutputRoot))
         {
             MessageBox.Show("결과 폴더가 존재하지 않습니다.", "알림"); return;
@@ -2474,6 +2756,7 @@ public partial class MainWindow : Window
 
         var confirm = MessageBox.Show(
             $"Cafe24에 신규 상품을 등록합니다.\n\n" +
+            $"대상 몰: {marketLabel}\n" +
             $"파일: {Path.GetFileName(uploadFile)}\n\n계속하시겠습니까?",
             "신규상품 등록 확인", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (confirm != MessageBoxResult.Yes) return;
@@ -2489,12 +2772,15 @@ public partial class MainWindow : Window
 
             var createService = new Cafe24CreateProductService(_v3Root, _legacyRoot);
             var progress = new Progress<string>(msg => Log(msg));
+            var totalCreated = 0;
+            var totalError = 0;
+            var totalSkipped = 0;
 
             async Task RunReadyMarketCreateAsync()
             {
                 StatusText.Text = "준비몰 신규상품 등록 중...";
                 Log("── [준비몰] 신규등록 시작 ──");
-                var resultB = await createService.CreateBMarketAsync(uploadFile, job.OutputRoot, progress, _cts.Token);
+                var resultB = await createService.CreateBMarketAsync(uploadFile, job.OutputRoot, progress, _cts.Token, _bMarketTokenPath);
                 totalCreated += resultB.CreatedCount;
                 totalError += resultB.ErrorCount;
                 totalSkipped += resultB.SkippedCount;
@@ -2511,7 +2797,8 @@ public partial class MainWindow : Window
             if (runHomeMarket)
             {
                 StatusText.Text = "홈런마켓 신규상품 등록 중...";
-                var result = await createService.CreateAsync(uploadFile, job.OutputRoot, progress, _cts.Token);
+                var aTokenPath = string.IsNullOrWhiteSpace(SettingsTokenPath.Text) ? null : SettingsTokenPath.Text.Trim();
+                var result = await createService.CreateAsync(uploadFile, job.OutputRoot, progress, _cts.Token, tokenPath: aTokenPath);
                 totalCreated += result.CreatedCount;
                 totalError += result.ErrorCount;
                 totalSkipped += result.SkippedCount;
@@ -2583,11 +2870,6 @@ public partial class MainWindow : Window
     private void HistoryViewProducts_Click(object sender, RoutedEventArgs e)
     {
         var job = GetSelectedJob();
-        if (!TryGetSelectedCafe24Markets(out var runHomeMarket, out var runReadyMarket, out var marketLabel))
-        {
-            return;
-        }
-
         if (job == null) { MessageBox.Show("이력을 선택하세요.", "알림"); return; }
 
         if (job.SelectedCodes.Count == 0)
@@ -2601,7 +2883,6 @@ public partial class MainWindow : Window
         sb.AppendLine($"총 {job.SelectedCodes.Count}개 상품코드");
         sb.AppendLine(new string('─', 40));
         for (int i = 0; i < job.SelectedCodes.Count; i++)
-            $"대상 몰: {marketLabel}\n" +
             sb.AppendLine($"  {i + 1}. {job.SelectedCodes[i]}");
 
         MessageBox.Show(sb.ToString(), "상품목록", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -2630,23 +2911,6 @@ public partial class MainWindow : Window
         ImageSelectionTab.IsSelected = true;
     }
 
-            var totalCount = 0;
-            var totalSuccess = 0;
-            var totalError = 0;
-            var totalSkipped = 0;
-            string? lastLogPath = null;
-
-            void Accumulate(Cafe24UploadResult result)
-            {
-                totalCount += result.TotalCount;
-                totalSuccess += result.SuccessCount;
-                totalError += result.ErrorCount;
-                totalSkipped += result.SkippedCount;
-                if (!string.IsNullOrWhiteSpace(result.LogPath))
-                {
-                    lastLogPath = result.LogPath;
-                }
-            }
     #endregion
 
     #region ═══ 설정 탭 ═══
@@ -2667,7 +2931,13 @@ public partial class MainWindow : Window
 
     private void BrowseTokenPath_Click(object sender, RoutedEventArgs e)
     {
-        var dlg = new OpenFileDialog { Filter = "텍스트|*.txt|모든 파일|*.*", Title = "Cafe24 토큰 파일 선택" };
+        var keyDir = DesktopKeyStore.DirectoryPath;
+        var dlg = new OpenFileDialog
+        {
+            Filter = "JSON|*.json|모든 파일|*.*",
+            Title = "홈런마켓 토큰 JSON 파일 선택",
+            InitialDirectory = Directory.Exists(keyDir) ? keyDir : ""
+        };
         if (dlg.ShowDialog() == true)
         {
             SettingsTokenPath.Text = dlg.FileName;
@@ -2686,11 +2956,6 @@ public partial class MainWindow : Window
             SettingsMallId.Text = state.Config.MallId;
             SettingsTokenStatus.Text = string.IsNullOrEmpty(state.Config.AccessToken)
                 ? "토큰 없음" : $"토큰 로드됨 ({state.ConfigPath})";
-        if (!TryGetSelectedCafe24Markets(out var runHomeMarket, out var runReadyMarket, out var marketLabel))
-        {
-            return;
-        }
-
 
             if (string.IsNullOrWhiteSpace(SettingsTokenPath.Text))
                 SettingsTokenPath.Text = state.ConfigPath;
@@ -2702,171 +2967,92 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void ReauthorizeToken_Click(object sender, RoutedEventArgs e)
-    {
-            $"대상 몰: {marketLabel}\n" +
-        if (await StartCafe24ReauthenticationAsync())
-        {
-            MessageBox.Show("Cafe24 새 토큰을 저장했습니다.", "Cafe24 다시 인증", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-    }
+    // ─── 준비몰(B마켓) 토큰 관련 ───────────────────────────────────────────
 
-    private async Task<bool> PromptCafe24ReauthenticationAsync(string title, string reasonMessage, string successMessage)
-    {
-        var message = string.IsNullOrWhiteSpace(reasonMessage)
-            ? "Cafe24 새 토큰을 다시 받으시겠습니까?"
-            : $"{reasonMessage}\n\n지금 Cafe24 새 토큰을 다시 받으시겠습니까?";
-
-        if (MessageBox.Show(message, title, MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
-        {
-            return false;
-            var totalCreated = 0;
-            var totalError = 0;
-            var totalSkipped = 0;
-        }
-
-        if (!await StartCafe24ReauthenticationAsync())
-        {
-            return false;
-        }
-
-        if (!string.IsNullOrWhiteSpace(successMessage))
-        {
-            MessageBox.Show(successMessage, title, MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-
-        return true;
-    }
-
-    private async Task<bool> StartCafe24ReauthenticationAsync()
+    private void LoadTokenInfoB()
     {
         try
         {
             var store = new Cafe24ConfigStore(_v3Root, _legacyRoot);
-            var tokenPath = string.IsNullOrWhiteSpace(SettingsTokenPath.Text)
-                ? null : SettingsTokenPath.Text.Trim();
-            var state = store.LoadTokenState(tokenPath);
-
-            ValidateCafe24ReauthenticationConfig(state.Config);
-
-            var client = new Cafe24ApiClient();
-            var authorizeUrl = client.BuildAuthorizeUrl(state.Config);
-            var dialog = new Cafe24AuthCodeDialog(authorizeUrl) { Owner = this };
-
-            TryOpenCafe24AuthorizePage(authorizeUrl);
-            if (dialog.ShowDialog() != true)
-            {
-                Log("Cafe24 다시 인증이 취소되었습니다.");
-                SettingsTokenStatus.Text = "다시 인증 취소";
-                return false;
-            }
-
-            var authorizationCode = Cafe24ApiClient.ExtractAuthorizationCode(dialog.InputText);
-            if (string.IsNullOrWhiteSpace(authorizationCode))
-            {
-                throw new InvalidDataException("붙여넣은 값에서 Cafe24 authorization code를 찾지 못했습니다.");
-            }
-
-            StatusText.Text = "Cafe24 다시 인증 중...";
-            await client.ExchangeAuthorizationCodeAsync(state.Config, authorizationCode, CancellationToken.None);
-            store.SaveTokenConfig(state.ConfigPath, state.Config);
-
-            SettingsTokenPath.Text = state.ConfigPath;
-            LoadTokenInfo();
-            SettingsTokenStatus.Text = $"다시 인증 완료 ({DateTime.Now:HH:mm:ss})";
-            Log("Cafe24 다시 인증 완료");
-            return true;
+            var path = string.IsNullOrWhiteSpace(_bMarketTokenPath) ? null : _bMarketTokenPath;
+            var state = store.LoadTokenStateB(path);
+            SettingsBMallId.Text = state.Config.MallId;
+            SettingsBTokenStatus.Text = string.IsNullOrEmpty(state.Config.AccessToken)
+                ? "토큰 없음" : $"토큰 로드됨 ({Path.GetFileName(state.ConfigPath)})";
+            if (string.IsNullOrWhiteSpace(SettingsBTokenPath.Text))
+                SettingsBTokenPath.Text = state.ConfigPath;
         }
-        catch (Exception ex)
+        catch
         {
-            Log($"Cafe24 다시 인증 오류: {ex.Message}");
-            SettingsTokenStatus.Text = "다시 인증 실패";
-            MessageBox.Show(ex.Message, "Cafe24 다시 인증 오류", MessageBoxButton.OK, MessageBoxImage.Error);
-            return false;
-        }
-        finally
-        {
-            StatusText.Text = "대기 중";
+            SettingsBMallId.Text = "";
+            SettingsBTokenStatus.Text = "토큰 파일을 찾을 수 없습니다.";
         }
     }
 
-    private void TryOpenCafe24AuthorizePage(string authorizeUrl)
+    private void BrowseTokenPathB_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog
+        {
+            Filter = "JSON|*.json|모든 파일|*.*",
+            Title = "준비몰 토큰 JSON 파일 선택",
+            InitialDirectory = DesktopKeyStore.DirectoryPath
+        };
+        if (dlg.ShowDialog() == true)
+        {
+            _bMarketTokenPath = dlg.FileName;
+            SettingsBTokenPath.Text = dlg.FileName;
+            LoadTokenInfoB();
+            // 설정 저장
+            var s = BuildListingSettings();
+            SaveAppSettings(s);
+            Log($"준비몰 토큰 파일 변경: {Path.GetFileName(dlg.FileName)}");
+        }
+    }
+
+    private async void CheckTokenA_Click(object sender, RoutedEventArgs e)
     {
         try
         {
-            Process.Start(new ProcessStartInfo(authorizeUrl) { UseShellExecute = true });
-            Log("Cafe24 인증 페이지를 브라우저에서 열었습니다.");
-        }
-        catch (Exception ex)
-        {
-            Log($"브라우저 자동 열기 실패: {ex.Message}");
-        }
-    }
-
-    private static void ValidateCafe24ReauthenticationConfig(Cafe24TokenConfig config)
-    {
-        var missing = new List<string>();
-
-        if (string.IsNullOrWhiteSpace(config.MallId))
-        {
-            missing.Add("MALL_ID");
-        }
-        if (string.IsNullOrWhiteSpace(config.ClientId))
-        {
-            missing.Add("CLIENT_ID");
-        }
-        if (string.IsNullOrWhiteSpace(config.ClientSecret))
-        {
-            missing.Add("CLIENT_SECRET");
-        }
-        if (string.IsNullOrWhiteSpace(config.RedirectUri))
-        {
-            missing.Add("REDIRECT_URI");
-        }
-
-        if (missing.Count > 0)
-        {
-            throw new InvalidDataException($"Cafe24 다시 인증에 필요한 설정이 없습니다: {string.Join(", ", missing)}");
-        }
-    }
-
-    private async void RefreshToken_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            StatusText.Text = "토큰 갱신 중...";
+            StatusText.Text = "토큰 확인 중...";
             var store = new Cafe24ConfigStore(_v3Root, _legacyRoot);
             var tokenPath = string.IsNullOrWhiteSpace(SettingsTokenPath.Text) ? null : SettingsTokenPath.Text.Trim();
             var state = store.LoadTokenState(tokenPath);
-
             var client = new Cafe24ApiClient();
-            await client.RefreshAccessTokenAsync(state.Config, CancellationToken.None);
-            store.SaveTokenConfig(state.ConfigPath, state.Config);
-
-            SettingsTokenPath.Text = state.ConfigPath;
-            LoadTokenInfo();
-            SettingsTokenStatus.Text = $"갱신 완료 ({DateTime.Now:HH:mm:ss})";
-            Log("Cafe24 토큰 갱신 완료");
-        }
-        catch (Cafe24ReauthenticationRequiredException ex)
-        {
-            Log($"토큰 갱신 오류: {ex.Message}");
-            SettingsTokenStatus.Text = "다시 인증 필요";
-            await PromptCafe24ReauthenticationAsync(
-                "토큰 갱신 오류",
-                ex.Message,
-                "Cafe24 새 토큰을 저장했습니다.");
+            await client.CheckTokenAsync(state.Config, CancellationToken.None);
+            SettingsTokenStatus.Text = $"사용 가능 ({DateTime.Now:HH:mm:ss})";
+            Log("홈런마켓 토큰 확인 완료 — 정상");
+            MessageBox.Show("홈런마켓 토큰이 정상입니다.", "토큰 확인", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
-            Log($"토큰 갱신 오류: {ex.Message}");
-            SettingsTokenStatus.Text = "갱신 실패";
-            MessageBox.Show(ex.Message, "토큰 갱신 오류", MessageBoxButton.OK, MessageBoxImage.Error);
+            SettingsTokenStatus.Text = "토큰 오류";
+            Log($"홈런마켓 토큰 확인 실패: {ex.Message}");
+            MessageBox.Show($"토큰이 유효하지 않습니다. 토큰 파일을 교체해 주세요.\n\n{ex.Message}", "토큰 오류", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
-        finally
+        finally { StatusText.Text = "대기 중"; }
+    }
+
+    private async void CheckTokenB_Click(object sender, RoutedEventArgs e)
+    {
+        try
         {
-            StatusText.Text = "대기 중";
+            StatusText.Text = "준비몰 토큰 확인 중...";
+            var store = new Cafe24ConfigStore(_v3Root, _legacyRoot);
+            var path = string.IsNullOrWhiteSpace(_bMarketTokenPath) ? null : _bMarketTokenPath;
+            var state = store.LoadTokenStateB(path);
+            var client = new Cafe24ApiClient();
+            await client.CheckTokenAsync(state.Config, CancellationToken.None);
+            SettingsBTokenStatus.Text = $"사용 가능 ({DateTime.Now:HH:mm:ss})";
+            Log("준비몰 토큰 확인 완료 — 정상");
+            MessageBox.Show("준비몰 토큰이 정상입니다.", "준비몰 토큰 확인", MessageBoxButton.OK, MessageBoxImage.Information);
         }
+        catch (Exception ex)
+        {
+            SettingsBTokenStatus.Text = "토큰 오류";
+            Log($"준비몰 토큰 확인 실패: {ex.Message}");
+            MessageBox.Show($"준비몰 토큰이 유효하지 않습니다. 토큰 파일을 교체해 주세요.\n\n{ex.Message}", "준비몰 토큰 오류", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally { StatusText.Text = "대기 중"; }
     }
 
     #endregion
@@ -2906,12 +3092,402 @@ public partial class MainWindow : Window
         return true;
     }
 
+    // ── 상품 선택 목록 ────────────────────────────────────────────────
+
+    private void LoadCafe24ProductList(string? xlsxPath = null)
+    {
+        xlsxPath ??= (!string.IsNullOrEmpty(_lastOutputFile) && File.Exists(_lastOutputFile))
+            ? _lastOutputFile
+            : FindLatestFile(_lastOutputRoot, "업로드용_*.xlsx");
+
+        _cafe24Items.Clear();
+        _cafe24LastClickIndex = -1;
+
+        if (string.IsNullOrEmpty(xlsxPath) || !File.Exists(xlsxPath))
+        {
+            Cafe24SelectCountText.Text = "(업로드용 엑셀 없음 — STEP 1 먼저 실행)";
+            return;
+        }
+
+        try
+        {
+            var entries = Services.Cafe24CreateProductService.ExtractGsCodesFromWorkbook(xlsxPath);
+            foreach (var (gsCode, productName) in entries)
+            {
+                var hist = _uploadHistory.Get(gsCode);
+                _cafe24Items.Add(new UploadProductItem
+                {
+                    GsCode = gsCode,
+                    ProductName = productName,
+                    HomeMarketStatus = UploadProductItem.FormatDate(hist?.HomeMarket),
+                    ReadyMarketStatus = UploadProductItem.FormatDate(hist?.ReadyMarket),
+                });
+            }
+            UpdateCafe24SelectCount();
+        }
+        catch (Exception ex)
+        {
+            Cafe24SelectCountText.Text = $"읽기 실패: {ex.Message}";
+        }
+    }
+
+    private void LoadCoupangProductList(string? xlsxPath = null)
+    {
+        xlsxPath ??= CoupangSourcePath?.Text?.Trim();
+        if (string.IsNullOrEmpty(xlsxPath) && !string.IsNullOrEmpty(_lastOutputRoot))
+            xlsxPath = FindLatestFile(_lastOutputRoot, "업로드용_*.xlsx");
+
+        _coupangItems.Clear();
+        _coupangLastClickIndex = -1;
+
+        if (string.IsNullOrEmpty(xlsxPath) || !File.Exists(xlsxPath))
+        {
+            CoupangSelectCountText.Text = "(파일 없음)";
+            return;
+        }
+
+        try
+        {
+            var rows = Services.CoupangProductBuilder.ReadSourceFile(xlsxPath);
+            var gsRegex = new System.Text.RegularExpressions.Regex(@"(GS\d{7}[A-Z0-9]*)",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            foreach (var row in rows)
+            {
+                var rowNum = (int)row["_row_num"]!;
+                var name = row.TryGetValue("상품명", out var n) ? n?.ToString() ?? "" : "";
+                var codeField = row.TryGetValue("자체 상품코드", out var c) ? c?.ToString() ?? "" : "";
+                var gsCode = gsRegex.Match(codeField).Success ? gsRegex.Match(codeField).Groups[1].Value.ToUpperInvariant()
+                           : gsRegex.Match(name).Success ? gsRegex.Match(name).Groups[1].Value.ToUpperInvariant() : "";
+                var hist = string.IsNullOrEmpty(gsCode) ? null : _uploadHistory.Get(gsCode);
+
+                _coupangItems.Add(new UploadProductItem
+                {
+                    RowNum = rowNum,
+                    GsCode = gsCode,
+                    ProductName = name,
+                    CoupangStatus = UploadProductItem.FormatDate(hist?.Coupang),
+                });
+            }
+            UpdateCoupangSelectCount();
+        }
+        catch (Exception ex)
+        {
+            CoupangSelectCountText.Text = $"읽기 실패: {ex.Message}";
+        }
+    }
+
+    private void UpdateCafe24SelectCount()
+    {
+        var total = _cafe24Items.Count;
+        var selected = _cafe24Items.Count(i => i.IsChecked);
+        Cafe24SelectCountText.Text = $"{selected}/{total} 선택";
+    }
+
+    private void UpdateCoupangSelectCount()
+    {
+        var total = _coupangItems.Count;
+        var selected = _coupangItems.Count(i => i.IsChecked);
+        CoupangSelectCountText.Text = $"{selected}/{total} 선택";
+    }
+
+    private void Cafe24SelectAll_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var item in _cafe24Items) item.IsChecked = true;
+        UpdateCafe24SelectCount();
+    }
+
+    private void Cafe24DeselectAll_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var item in _cafe24Items) item.IsChecked = false;
+        UpdateCafe24SelectCount();
+    }
+
+    private void Cafe24RefreshList_Click(object sender, RoutedEventArgs e) => LoadCafe24ProductList();
+
+    private void CoupangSelectAll_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var item in _coupangItems) item.IsChecked = true;
+        UpdateCoupangSelectCount();
+    }
+
+    private void CoupangDeselectAll_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var item in _coupangItems) item.IsChecked = false;
+        UpdateCoupangSelectCount();
+    }
+
+    private void CoupangRefreshList_Click(object sender, RoutedEventArgs e) => LoadCoupangProductList();
+
+    private void Cafe24ProductList_PreviewMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        HandleProductListShiftClick(Cafe24ProductList, _cafe24Items, ref _cafe24LastClickIndex, e);
+        UpdateCafe24SelectCount();
+    }
+
+    private void CoupangProductList_PreviewMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        HandleProductListShiftClick(CoupangProductList, _coupangItems, ref _coupangLastClickIndex, e);
+        UpdateCoupangSelectCount();
+    }
+
+    // ── 기본실행 탭 신규등록 목록 ─────────────────────────────────────────
+
+    private void LoadBasicCafe24ProductList(string? xlsxPath = null)
+    {
+        xlsxPath ??= (!string.IsNullOrEmpty(_lastOutputFile) && File.Exists(_lastOutputFile))
+            ? _lastOutputFile
+            : FindLatestFile(_lastOutputRoot, "업로드용_*.xlsx");
+
+        _basicCafe24Items.Clear();
+        _basicCafe24LastClickIndex = -1;
+
+        if (string.IsNullOrEmpty(xlsxPath) || !File.Exists(xlsxPath))
+        {
+            BasicCafe24CountText.Text = "(업로드용 엑셀 없음 — STEP 1 먼저 실행)";
+            BasicCafe24RunButton.IsEnabled = false;
+            return;
+        }
+
+        try
+        {
+            var entries = Services.Cafe24CreateProductService.ExtractGsCodesFromWorkbook(xlsxPath);
+            foreach (var (gsCode, productName) in entries)
+            {
+                var hist = _uploadHistory.Get(gsCode);
+                _basicCafe24Items.Add(new UploadProductItem
+                {
+                    GsCode = gsCode,
+                    ProductName = productName,
+                    HomeMarketStatus = UploadProductItem.FormatDate(hist?.HomeMarket),
+                    ReadyMarketStatus = UploadProductItem.FormatDate(hist?.ReadyMarket),
+                });
+            }
+            UpdateBasicCafe24Count();
+            BasicCafe24RunButton.IsEnabled = _basicCafe24Items.Count > 0;
+        }
+        catch (Exception ex)
+        {
+            BasicCafe24CountText.Text = $"읽기 실패: {ex.Message}";
+            BasicCafe24RunButton.IsEnabled = false;
+        }
+    }
+
+    private void UpdateBasicCafe24Count()
+    {
+        var total = _basicCafe24Items.Count;
+        var selected = _basicCafe24Items.Count(i => i.IsChecked);
+        BasicCafe24CountText.Text = $"{selected}/{total} 선택";
+    }
+
+    private void BasicCafe24SelectAll_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var item in _basicCafe24Items) item.IsChecked = true;
+        UpdateBasicCafe24Count();
+    }
+
+    private void BasicCafe24DeselectAll_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var item in _basicCafe24Items) item.IsChecked = false;
+        UpdateBasicCafe24Count();
+    }
+
+    private void BasicCafe24Refresh_Click(object sender, RoutedEventArgs e)
+    {
+        var files = _testLlmResultFiles.Where(File.Exists).ToList();
+        LoadBasicCafe24ProductList(files.Count > 0 ? files[0] : null);
+    }
+
+    private void BasicCafe24ProductList_PreviewMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        HandleProductListShiftClick(BasicCafe24ProductGrid, _basicCafe24Items, ref _basicCafe24LastClickIndex, e);
+        UpdateBasicCafe24Count();
+    }
+
+    private async void BasicCafe24Run_Click(object sender, RoutedEventArgs e)
+    {
+        var files = _testLlmResultFiles.Where(File.Exists).ToList();
+        if (files.Count == 0)
+        {
+            MessageBox.Show("LLM 결과 파일을 먼저 선택하세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var selectedGs = new HashSet<string>(
+            _basicCafe24Items.Where(i => i.IsChecked).Select(i => i.GsCode),
+            StringComparer.OrdinalIgnoreCase);
+
+        if (selectedGs.Count == 0)
+        {
+            MessageBox.Show("등록할 상품을 선택하세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var doHome = TestCafe24HomeCheckBox.IsChecked == true;
+        var doReady = TestCafe24ReadyCheckBox.IsChecked == true;
+
+        _lastOutputRoot = _testOutputRoot ?? Path.GetDirectoryName(files[0])!;
+        _lastOutputFile = files[0];
+
+        var uploadFile = FindUploadExcel();
+        if (uploadFile == null)
+        {
+            MessageBox.Show("업로드용 엑셀을 찾을 수 없습니다. STEP 1을 먼저 실행하세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // 네이버 중복 확인
+        if (doHome)
+        {
+            StatusText.Text = "네이버 중복 확인 중...";
+            var duplicateInfo = await CheckNaverDuplicatesAsync(uploadFile);
+            if (duplicateInfo.Count > 0)
+            {
+                var dupLines = duplicateInfo.Select(d => $"  • {d.GsCode}  {d.ProductName}");
+                var msg = $"다음 {duplicateInfo.Count}개 상품이 네이버에 이미 등록되어 있습니다:\n\n" +
+                          string.Join("\n", dupLines) +
+                          "\n\n포함하여 계속 진행하시겠습니까?";
+                if (MessageBox.Show(msg, "네이버 중복 확인", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                    return;
+            }
+        }
+
+        BasicCafe24RunButton.IsEnabled = false;
+        _cts = new CancellationTokenSource();
+
+        try
+        {
+            StatusText.Text = "Cafe24 신규등록 중...";
+            ProgressBar.IsIndeterminate = true;
+
+            var createService = new Cafe24CreateProductService(_v3Root, _legacyRoot);
+            var progress = new Progress<string>(msg => Log(msg));
+            int totalCreated = 0, totalError = 0, totalSkipped = 0;
+
+            if (doHome)
+            {
+                var aTokenPath = string.IsNullOrWhiteSpace(SettingsTokenPath.Text) ? null : SettingsTokenPath.Text.Trim();
+                var result = await createService.CreateAsync(uploadFile, _lastOutputRoot, progress, _cts.Token,
+                    tokenPath: aTokenPath, allowedGsCodes: selectedGs);
+                totalCreated += result.CreatedCount;
+                totalError += result.ErrorCount;
+                totalSkipped += result.SkippedCount;
+                foreach (var item in _basicCafe24Items.Where(i => i.IsChecked))
+                {
+                    _uploadHistory.Mark(item.GsCode, "homemarket");
+                    item.HomeMarketStatus = UploadProductItem.FormatDate(DateTime.Now);
+                }
+                Log($"[홈런마켓] 신규등록 완료: 생성 {result.CreatedCount} / 오류 {result.ErrorCount} / 스킵 {result.SkippedCount}");
+            }
+
+            if (doReady)
+            {
+                StatusText.Text = "준비몰 신규상품 등록 중...";
+                var resultB = await createService.CreateBMarketAsync(uploadFile, _lastOutputRoot, progress, _cts.Token,
+                    _bMarketTokenPath, selectedGs);
+                totalCreated += resultB.CreatedCount;
+                totalError += resultB.ErrorCount;
+                totalSkipped += resultB.SkippedCount;
+                foreach (var item in _basicCafe24Items.Where(i => i.IsChecked))
+                {
+                    _uploadHistory.Mark(item.GsCode, "readymarket");
+                    item.ReadyMarketStatus = UploadProductItem.FormatDate(DateTime.Now);
+                }
+                Log($"[준비몰] 신규등록 완료: 생성 {resultB.CreatedCount} / 오류 {resultB.ErrorCount} / 스킵 {resultB.SkippedCount}");
+            }
+
+            UpdateBasicCafe24Count();
+            Log($"신규등록 완료: 생성 {totalCreated} / 오류 {totalError} / 스킵 {totalSkipped}");
+            StatusText.Text = "신규등록 완료";
+        }
+        catch (OperationCanceledException)
+        {
+            Log("신규등록 취소됨");
+            StatusText.Text = "취소됨";
+        }
+        catch (Exception ex)
+        {
+            Log($"신규등록 오류: {ex.Message}");
+            StatusText.Text = "오류 발생";
+            MessageBox.Show(ex.Message, "신규등록 오류", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            ProgressBar.IsIndeterminate = false;
+            BasicCafe24RunButton.IsEnabled = true;
+            _cts = null;
+        }
+    }
+
+    private static void HandleProductListShiftClick(
+        System.Windows.Controls.DataGrid grid,
+        System.Collections.ObjectModel.ObservableCollection<UploadProductItem> items,
+        ref int lastIndex,
+        System.Windows.Input.MouseButtonEventArgs e)
+    {
+        var hit = grid.InputHitTest(e.GetPosition(grid)) as System.Windows.DependencyObject;
+        if (hit is null) return;
+
+        // 클릭한 DataGridRow 찾기
+        while (hit is not null && hit is not System.Windows.Controls.DataGridRow)
+            hit = System.Windows.Media.VisualTreeHelper.GetParent(hit);
+
+        if (hit is not System.Windows.Controls.DataGridRow clickedRow) return;
+
+        var item = clickedRow.Item as UploadProductItem;
+        if (item is null) return;
+
+        var clickedIndex = items.IndexOf(item);
+        if (clickedIndex < 0) return;
+
+        if (Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift))
+        {
+            if (lastIndex >= 0)
+            {
+                var start = Math.Min(lastIndex, clickedIndex);
+                var end = Math.Max(lastIndex, clickedIndex);
+                var targetState = items[clickedIndex].IsChecked;
+                for (var i = start; i <= end; i++)
+                    items[i].IsChecked = targetState;
+                e.Handled = true;
+                return;
+            }
+        }
+
+        lastIndex = clickedIndex;
+    }
+
     private static string? FindLatestFile(string? dir, string pattern)
     {
         if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return null;
         return Directory.GetFiles(dir, pattern)
             .OrderByDescending(File.GetLastWriteTime)
             .FirstOrDefault();
+    }
+
+    private async Task<List<(string GsCode, string ProductName)>> CheckNaverDuplicatesAsync(string uploadFile)
+    {
+        var result = new List<(string GsCode, string ProductName)>();
+        try
+        {
+            var gsCodesInFile = Cafe24CreateProductService.ExtractGsCodesFromWorkbook(uploadFile);
+            if (gsCodesInFile.Count == 0) return result;
+
+            var naverClient = NaverCommerceApiClient.FromKeyFile();
+            var existingCodes = await naverClient.GetExistingGsCodesAsync(CancellationToken.None);
+            var existingSet = new HashSet<string>(existingCodes.Select(e => e.GsCode), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var (gsCode, productName) in gsCodesInFile)
+            {
+                if (existingSet.Contains(gsCode))
+                    result.Add((gsCode, productName));
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"네이버 중복 확인 실패 (스킵): {ex.Message}");
+        }
+        return result;
     }
 
     private static int FindCol(Dictionary<string, int> cols, string[] candidates)
@@ -3234,11 +3810,19 @@ public class ProductItem : INotifyPropertyChanged
     private bool _isSelected = true;
     public string Code { get; set; } = "";
     public string Name { get; set; } = "";
+    public DateTime? LastProcessedAt { get; set; }
+
     public bool IsSelected
     {
         get => _isSelected;
         set { if (_isSelected == value) return; _isSelected = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelected))); }
     }
+
+    // 이력이 있으면 "(MM/dd HH:mm)" 형태로 표시, 없으면 ""
+    public string HistoryText => LastProcessedAt.HasValue
+        ? LastProcessedAt.Value.ToString("(MM/dd HH:mm)")
+        : "";
+
     public event PropertyChangedEventHandler? PropertyChanged;
 }
 

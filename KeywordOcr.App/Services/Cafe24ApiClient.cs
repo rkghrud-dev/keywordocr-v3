@@ -107,6 +107,15 @@ internal sealed class Cafe24ApiClient
             : code.Trim();
     }
 
+    /// <summary>액세스 토큰 유효성 확인 (shop 1개 조회). 성공이면 Mall ID를 반환.</summary>
+    public async Task<string> CheckTokenAsync(Cafe24TokenConfig config, CancellationToken cancellationToken)
+    {
+        var url = $"https://{config.MallId}.cafe24api.com/api/v2/admin/products?shop_no={Uri.EscapeDataString(config.ShopNo)}&limit=1";
+        using var request = CreateRequest(HttpMethod.Get, url, config);
+        using var document = await SendJsonAsync(request, cancellationToken);
+        return config.MallId;
+    }
+
     public async Task<List<Cafe24Product>> GetProductsAsync(Cafe24TokenConfig config, bool onlySelling, CancellationToken cancellationToken)
     {
         var products = new List<Cafe24Product>();

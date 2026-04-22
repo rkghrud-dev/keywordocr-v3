@@ -29,7 +29,7 @@ def _normalize_google_credentials(legacy_root: Path) -> None:
 
     ensure_env_loaded(str(legacy_root / '.env'))
     current = (os.getenv('GOOGLE_APPLICATION_CREDENTIALS') or os.getenv('GOOGLE_VISION_CREDENTIALS') or '').strip()
-    if current and Path(current).is_file():
+    if current and Path(current).is_file() and _is_desktop_key_path(current):
         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = str(Path(current).resolve())
         return
 
@@ -39,8 +39,13 @@ def _normalize_google_credentials(legacy_root: Path) -> None:
             os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = str(Path(candidate).resolve())
             return
 
-    if current:
-        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = current
+    os.environ.pop('GOOGLE_APPLICATION_CREDENTIALS', None)
+
+
+def _is_desktop_key_path(path: str) -> bool:
+    key_root = os.path.normcase(os.path.abspath(Path.home() / 'Desktop' / 'key'))
+    target = os.path.normcase(os.path.abspath(path))
+    return target == key_root or target.startswith(key_root + os.sep)
 
 
 def main() -> int:
@@ -79,6 +84,7 @@ def main() -> int:
     parser.add_argument('--export-root', default='')
     parser.add_argument('--model', default='claude-sonnet-4-6')
     parser.add_argument('--chunk-size', default='10')
+    parser.add_argument('--keyword-version', default='2.0')
     args = parser.parse_args()
 
     legacy_root = Path(args.legacy_root).resolve()
@@ -142,6 +148,7 @@ def main() -> int:
         phase=args.phase,
         export_root_override=str(args.export_root or '').strip(),
         chunk_size=int(args.chunk_size),
+        keyword_version=str(args.keyword_version or '2.0').strip() or '2.0',
         enable_b_market=True,
         logo_path_b=str(getattr(args, 'logo_path_b', '') or '').strip(),
         img_tag_b=str(getattr(args, 'img_tag_b', '') or '').strip(),

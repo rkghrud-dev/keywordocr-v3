@@ -10,18 +10,12 @@ internal static class Cafe24SharedTokenStore
 {
     public static string GetDefaultPath()
     {
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
-            "key",
-            "cafe24_token.json");
+        return DesktopKeyStore.GetPath("cafe24_token.json");
     }
 
     public static string GetDefaultPathB()
     {
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
-            "key",
-            "cafe24_token_jb.json");
+        return DesktopKeyStore.GetPath("cafe24_token_jb.json");
     }
 
     public static Dictionary<string, string> LoadAsKeyValues(string path)

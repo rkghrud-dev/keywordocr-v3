@@ -26,9 +26,11 @@ public sealed class Cafe24CreateProductService
         string sourcePath,
         string exportRoot,
         IProgress<string>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? tokenPath = null,
+        IReadOnlySet<string>? allowedGsCodes = null)
     {
-        var tokenState = _configStore.LoadTokenState();
+        var tokenState = _configStore.LoadTokenState(tokenPath);
         ValidateTokenConfig(tokenState.Config);
 
         var options = _configStore.LoadUploadOptions(exportRoot);
@@ -57,7 +59,16 @@ public sealed class Cafe24CreateProductService
         var priceReview = Cafe24UploadSupport.LoadPriceReview(options.PriceDataPath);
         var dateTag = Cafe24UploadSupport.ExtractDateTag(uploadWorkbookPath) ?? options.DateTag ?? DateTime.Now.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
         var imageRoot = TryResolveImageRoot(workingDirectory, options, dateTag, progress);
-        var existingProducts = await ExecuteWithRefreshAsync(tokenState, cfg => _apiClient.GetProductsAsync(cfg, false, cancellationToken), cancellationToken);
+        List<Cafe24Product> existingProducts;
+        try
+        {
+            existingProducts = await ExecuteWithRefreshAsync(tokenState, cfg => _apiClient.GetProductsAsync(cfg, false, cancellationToken), cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            progress?.Report($"기존 상품 목록 조회 실패 (중복 표시 스킵): {Cafe24UploadSupport.UnwrapMessage(ex)}");
+            existingProducts = new List<Cafe24Product>();
+        }
         var existingByName = existingProducts
             .Where(product => !string.IsNullOrWhiteSpace(product.ProductName))
             .GroupBy(product => product.ProductName, StringComparer.Ordinal)
@@ -76,6 +87,14 @@ public sealed class Cafe24CreateProductService
             var productName = GetValue(row, "상품명");
             var customProductCode = GetValue(row, "자체 상품코드");
             var gsCode = ExtractGsCode(row);
+
+            if (allowedGsCodes is not null && !string.IsNullOrWhiteSpace(gsCode)
+                && !allowedGsCodes.Contains(gsCode))
+            {
+                skippedCount += 1;
+                continue;
+            }
+
             progress?.Report($"[{index + 1}/{rows.Count}] {productName} 신규등록 준비");
 
             if (string.IsNullOrWhiteSpace(productName))
@@ -156,12 +175,14 @@ public sealed class Cafe24CreateProductService
         string sourcePath,
         string exportRoot,
         IProgress<string>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? bMarketTokenPath = null,
+        IReadOnlySet<string>? allowedGsCodes = null)
     {
         Cafe24TokenState tokenState;
         try
         {
-            tokenState = _configStore.LoadTokenStateB();
+            tokenState = _configStore.LoadTokenStateB(bMarketTokenPath);
         }
         catch (FileNotFoundException ex)
         {
@@ -205,7 +226,16 @@ public sealed class Cafe24CreateProductService
             imageRoot = Directory.Exists(imageRootB) ? imageRootB : imageRootA;
         }
 
-        var existingProducts = await ExecuteWithRefreshAsync(tokenState, cfg => _apiClient.GetProductsAsync(cfg, false, cancellationToken), cancellationToken);
+        List<Cafe24Product> existingProducts;
+        try
+        {
+            existingProducts = await ExecuteWithRefreshAsync(tokenState, cfg => _apiClient.GetProductsAsync(cfg, false, cancellationToken), cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            progress?.Report($"[B마켓] 기존 상품 목록 조회 실패 (중복 표시 스킵): {Cafe24UploadSupport.UnwrapMessage(ex)}");
+            existingProducts = new List<Cafe24Product>();
+        }
         var existingByName = existingProducts
             .Where(product => !string.IsNullOrWhiteSpace(product.ProductName))
             .GroupBy(product => product.ProductName, StringComparer.Ordinal)
@@ -224,6 +254,14 @@ public sealed class Cafe24CreateProductService
             var productName = GetValue(row, "상품명");
             var customProductCode = GetValue(row, "자체 상품코드");
             var gsCode = ExtractGsCode(row);
+
+            if (allowedGsCodes is not null && !string.IsNullOrWhiteSpace(gsCode)
+                && !allowedGsCodes.Contains(gsCode))
+            {
+                skippedCount += 1;
+                continue;
+            }
+
             progress?.Report($"[B마켓] [{index + 1}/{rows.Count}] {productName} 신규등록 준비");
 
             if (string.IsNullOrWhiteSpace(productName))
@@ -562,9 +600,31 @@ public sealed class Cafe24CreateProductService
         }
         catch (Cafe24TokenExpiredException)
         {
-            await _apiClient.RefreshAccessTokenAsync(tokenState.Config, cancellationToken);
-            _configStore.SaveTokenConfig(tokenState.ConfigPath, tokenState.Config);
-            return await action(tokenState.Config);
+            var cfg = tokenState.Config;
+            var canRefresh = !string.IsNullOrWhiteSpace(cfg.RefreshToken)
+                          && !string.IsNullOrWhiteSpace(cfg.ClientId)
+                          && !string.IsNullOrWhiteSpace(cfg.ClientSecret);
+            if (canRefresh)
+            {
+                try
+                {
+                    await _apiClient.RefreshAccessTokenAsync(cfg, cancellationToken);
+                    _configStore.SaveTokenConfig(tokenState.ConfigPath, cfg);
+                    return await action(cfg);
+                }
+                catch (Cafe24ReauthenticationRequiredException) { }
+                catch (Exception) { }
+            }
+            // 리프레시 불가 또는 실패 → 설정파일 토큰으로 재시도
+            try
+            {
+                return await action(tokenState.Config);
+            }
+            catch (Cafe24TokenExpiredException)
+            {
+                throw new InvalidOperationException(
+                    "Cafe24 ACCESS_TOKEN이 만료됐습니다. 설정 탭에서 새 토큰 파일로 교체하거나 토큰을 갱신해 주세요.");
+            }
         }
     }
 
@@ -575,6 +635,19 @@ public sealed class Cafe24CreateProductService
             await action(config);
             return true;
         }, cancellationToken);
+    }
+
+    public static IReadOnlyList<(string GsCode, string ProductName)> ExtractGsCodesFromWorkbook(string workbookPath)
+    {
+        var rows = ReadRows(workbookPath);
+        var result = new List<(string, string)>();
+        foreach (var row in rows)
+        {
+            var gsCode = ExtractGsCode(row);
+            if (!string.IsNullOrWhiteSpace(gsCode))
+                result.Add((gsCode, GetValue(row, "상품명")));
+        }
+        return result;
     }
 
     private static string ExtractGsCode(IReadOnlyDictionary<string, string> row)

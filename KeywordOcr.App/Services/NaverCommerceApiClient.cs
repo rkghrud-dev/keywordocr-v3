@@ -46,9 +46,7 @@ public sealed class NaverCommerceApiClient : IDisposable
 
     public static NaverCommerceApiClient FromKeyFile()
     {
-        var keyDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "key");
-        var keyFile = Path.Combine(keyDir, "naver_client_key.txt");
+        var keyFile = DesktopKeyStore.GetPath("naver_client_key.txt");
 
         var kv = new Dictionary<string, string>();
         if (File.Exists(keyFile))
@@ -235,6 +233,43 @@ public sealed class NaverCommerceApiClient : IDisposable
         }
 
         throw new InvalidOperationException($"네이버 이미지 업로드 실패: {json[..Math.Min(json.Length, 200)]}");
+    }
+
+    /// <summary>판매자 관리 코드(sellerManagementCode)가 GS로 시작하는 채널 상품 목록 조회</summary>
+    public async Task<List<(string GsCode, string ProductName)>> GetExistingGsCodesAsync(CancellationToken ct = default)
+    {
+        var result = new List<(string, string)>();
+        var page = 0;
+        const int pageSize = 100;
+
+        while (true)
+        {
+            var query = $"size={pageSize}&page={page}";
+            using var doc = await CallAsync("GET", "/v2/products/channel-products", query: query, ct: ct);
+            var root = doc.RootElement;
+
+            JsonElement contents;
+            if (!root.TryGetProperty("contents", out contents) || contents.ValueKind != JsonValueKind.Array)
+                break;
+
+            var count = 0;
+            foreach (var item in contents.EnumerateArray())
+            {
+                count++;
+                var code = item.TryGetProperty("sellerManagementCode", out var cProp) ? cProp.GetString() ?? "" : "";
+                if (code.StartsWith("GS", StringComparison.OrdinalIgnoreCase))
+                {
+                    var name = item.TryGetProperty("name", out var nProp) ? nProp.GetString() ?? "" : "";
+                    result.Add((code.ToUpperInvariant(), name));
+                }
+            }
+
+            if (count < pageSize)
+                break;
+            page++;
+        }
+
+        return result;
     }
 
     /// <summary>상품 등록</summary>

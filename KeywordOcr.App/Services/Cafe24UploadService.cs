@@ -234,12 +234,13 @@ public sealed class Cafe24UploadService
         string exportRoot,
         Cafe24UploadOptions? overrideOptions = null,
         IProgress<string>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? bMarketTokenPath = null)
     {
         Cafe24TokenState tokenState;
         try
         {
-            tokenState = _configStore.LoadTokenStateB();
+            tokenState = _configStore.LoadTokenStateB(bMarketTokenPath);
         }
         catch (FileNotFoundException ex)
         {

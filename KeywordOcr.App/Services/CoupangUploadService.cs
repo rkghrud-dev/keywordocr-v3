@@ -42,7 +42,8 @@ public sealed class CoupangUploadService
         string sourcePath,
         CoupangUploadOptions options,
         IProgress<string>? progress = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlySet<int>? allowedRowNums = null)
     {
         void Log(string msg) => progress?.Report(msg);
 
@@ -56,7 +57,11 @@ public sealed class CoupangUploadService
 
         // 행 필터
         List<Dictionary<string, object?>> targetRows;
-        if (options.RowStart > 0)
+        if (allowedRowNums is not null)
+        {
+            targetRows = allRows.Where(r => allowedRowNums.Contains((int)r["_row_num"]!)).ToList();
+        }
+        else if (options.RowStart > 0)
         {
             var end = options.RowEnd > 0 ? options.RowEnd : options.RowStart;
             targetRows = allRows.Where(r =>
