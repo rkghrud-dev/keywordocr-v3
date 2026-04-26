@@ -41,13 +41,6 @@ _SYNONYM_GROUPS = {
     "color_silver": ["실버", "은색"],
 }
 
-_COMMON_SEGMENTS = {
-    "차량용", "차량", "조명", "브라켓", "브래킷", "마운트", "거치대", "홀더", "고정대",
-    "무타공", "설치", "장착", "체결", "본넷", "보닛", "트렁크", "게이트", "각도조절",
-    "회전형", "볼트체결", "스틸", "실버", "블랙", "작업등", "외부조명", "DIY", "튜닝",
-    "틈새", "밀폐", "패드", "콘센트", "가스켓", "닭부리", "힌지", "플립", "도어",
-    "트럭", "D링", "디링", "나사고리", "볼트고리", "관개", "커넥터", "호스", "연결",
-}
 
 
 def _clean_text(s: Any) -> str:
@@ -454,22 +447,11 @@ def build_keyword_string(
     fallback_text: str = "",
     market: str = "A",
 ) -> str:
-    """Vision JSON + OCR 텍스트 기반 키워드 생성.
-
-    핵심 철학:
-    - 핵심어 합성어는 1개만 (PVC클램프)
-    - 용도 수식은 "~용" 형태 (파이프용)
-    - 기능/동작은 단독 단어 (고정, 지지, 정리)
-    - 자연스러운 합성어만 유지 (흔들림방지 O, 파이프고정 → 쪼갬)
-    - 사용처 단독 (천장, 벽면, 욕실)
-    - 형용사 단독 (강력, 다양한)
-    - 상품 특징 단독 (경량, 내식성)
-    - 90~140자 목표
-    """
+    """Vision/OCR 증거만 사용해 키워드 문자열을 조립한다."""
     try:
         ocr_text = "" if "OCR 텍스트 없음" in str(ocr_text or "") else str(ocr_text or "")
+        target_count = max(1, int(target_count or TARGET_DEFAULT))
 
-        # 마켓별 글자수 규칙
         if market == "B":
             min_char = _MIN_CHAR_TARGET_B
             max_char = _MAX_CHAR_LIMIT_B
@@ -480,170 +462,164 @@ def build_keyword_string(
         analysis = vision_analysis if isinstance(vision_analysis, dict) else {}
         axis = _extract_required_axes(analysis)
 
-        # ── 축별 토큰 그룹 ──
         cat_words = _dedupe_normalized(axis["category"])
         type_words = _dedupe_normalized(axis["product_type_correction"])
-        core_words = _dedupe_normalized(
-            axis["category"] + axis["product_type_correction"]
-        )
-
-        # 핵심 상품어 (클램프, 호스 등)
+        core_words = _dedupe_normalized(axis["category"] + axis["product_type_correction"])
         base_core = _pick_base_core(cat_words, type_words)
+        name_identity_tokens = _extract_name_only_tokens(fallback_text, market=market)
 
-        # 용도/대상 단어: 핵심어와 결합해 "~용" 또는 합성어 생성
-        purpose_words = [w for w in core_words
-                         if w != base_core and w not in _GENERIC_WORDS]
+        generic_words = _GENERIC_WORDS | {
+            "고정", "설치", "연결", "장착", "정리", "방지", "보호", "부품", "용품", "도구", "세트",
+            "옵션", "사용", "실내", "실외", "간편", "강력", "다양한", "사이즈", "작업효율",
+            "편리", "휴대용", "다용도", "구조", "형태",
+        }
 
-        # 기능/동작: 단독 사용 (고정, 지지, 정리, 방지 등)
-        functions = _dedupe_normalized(
-            axis["problem_solving_keyword"]
-            + axis["usage_purpose"]
-            + axis["benefit_keywords"]
+        def semantic_key(token: str) -> str:
+            return _core_form(_normalize_token(token))
+
+        def is_generic_token(token: str) -> bool:
+            tok = _normalize_token(token)
+            key = semantic_key(tok)
+            if not tok or not key:
+                return True
+            if key in generic_words or tok.lower() in _STOPWORDS:
+                return True
+            if any(key.endswith(suffix) for suffix in ("용품", "부품", "도구", "세트", "옵션")):
+                return True
+            return False
+
+        def has_overlap(token: str, refs: list[str]) -> bool:
+            key = semantic_key(token)
+            if not key:
+                return False
+            for ref in refs:
+                ref_key = semantic_key(ref)
+                if not ref_key:
+                    continue
+                if key == ref_key:
+                    return True
+                if len(key) >= 3 and len(ref_key) >= 3 and (key in ref_key or ref_key in key):
+                    return True
+            return False
+
+        def dedupe_semantic(items: list[str]) -> list[str]:
+            out = []
+            seen = set()
+            for item in items:
+                tok = _normalize_token(item)
+                key = semantic_key(tok)
+                if not tok or not key or key in seen:
+                    continue
+                seen.add(key)
+                out.append(tok)
+            return out
+
+        identity_terms = []
+        if base_core and not is_generic_token(base_core):
+            identity_terms.append(base_core)
+        identity_terms.extend(core_words)
+        identity_terms.extend(name_identity_tokens)
+        identity_terms = [t for t in dedupe_semantic(identity_terms) if not is_generic_token(t)]
+
+        usage_terms = []
+        for raw in core_words:
+            tok = _normalize_token(raw)
+            if not tok or tok == base_core or is_generic_token(tok):
+                continue
+            usage_terms.append(tok)
+            if len(tok) <= 3 and len(tok + "용") <= _MAX_TOKEN_LEN:
+                usage_terms.append(tok + "용")
+        usage_terms.extend(_dedupe_normalized(axis["usage_location"] + axis["space_keywords"]))
+        usage_terms = [t for t in dedupe_semantic(usage_terms) if not is_generic_token(t)]
+
+        _ACTION_VOCAB = {
+            "고정", "정리", "방지", "설치", "시공", "조절", "장착",
+            "연결", "분리", "교체", "보호", "차단", "밀봉", "강화",
+            "지지", "수납", "거치", "탈착", "흔들림", "내구성", "내식성",
+        }
+        known_words = set(identity_terms + usage_terms) | _ACTION_VOCAB
+        function_terms = []
+        raw_functions = _dedupe_normalized(
+            axis["problem_solving_keyword"] + axis["usage_purpose"] + axis["benefit_keywords"]
         )
+        for raw in raw_functions:
+            fn = _normalize_token(raw)
+            if not fn or is_generic_token(fn):
+                continue
+            split = _split_compound_once(fn, known_words) if len(fn) > 3 else [fn]
+            for part in split:
+                part = _normalize_token(part)
+                if part and not is_generic_token(part):
+                    function_terms.append(part)
+        function_terms = dedupe_semantic(function_terms)
 
-        # 사용처: 단독 사용 (천장, 벽면, 욕실 등)
-        locations = _dedupe_normalized(
-            axis["usage_location"]
-            + axis["space_keywords"]
-        )
+        evidence_refs = identity_terms + usage_terms + function_terms
+        boost_terms = []
+        raw_boosts = _dedupe_normalized(axis["installation_keywords"] + axis["longtail_candidates"])
+        for raw in raw_boosts:
+            expanded = _expand_term(raw, known_words)
+            for part in expanded:
+                part = _normalize_token(part)
+                if not part or is_generic_token(part):
+                    continue
+                if not has_overlap(part, evidence_refs):
+                    continue
+                boost_terms.append(part)
+        boost_terms = dedupe_semantic(boost_terms)
 
-        # 부스트 키워드 (끼움형, 나사고정 등)
-        boost_terms = _dedupe_normalized(
-            axis["installation_keywords"] + axis["longtail_candidates"]
-        )
+        evidence_refs = identity_terms + usage_terms + function_terms + boost_terms
+        ocr_terms = []
+        for token in _tokenize_ocr(ocr_text):
+            if is_generic_token(token):
+                continue
+            if not has_overlap(token, evidence_refs):
+                continue
+            ocr_terms.append(token)
+        ocr_terms = dedupe_semantic(ocr_terms)
 
-        # 색상은 옵션이므로 키워드에서 제외
+        fallback_terms = [t for t in dedupe_semantic(name_identity_tokens) if not is_generic_token(t)]
 
         out: list[str] = []
         seen: set[str] = set()
-
-        def _try_add(token: str) -> bool:
-            t = _normalize_token(token)
-            if not t or len(t) < 2 or t.lower() in _STOPWORDS:
-                return False
-            # 불필요 패턴 제거
-            if t.endswith("소재") and len(t) > 2:
-                return False
-            # 색상은 옵션이라 키워드 불필요
-            if re.fullmatch(r"(흰색|검정|검은색|화이트|블랙|실버|은색|회색|그레이|빨간색|파란색|노란색|녹색|흰색화이트|블랙검정)", t):
-                return False
-            if len(t) > _MAX_TOKEN_LEN:
-                return False
-            if t in seen:
-                return False
-            seen.add(t)
-            out.append(t)
-            return True
 
         def _char_len() -> int:
             return sum(len(t) for t in out) + max(0, len(out) - 1)
 
         def _is_full() -> bool:
-            return _char_len() >= max_char
+            return len(out) >= target_count or _char_len() >= max_char
 
-        # ── Phase 1: 대표 합성어 1개 (PVC클램프 등) ──
-        compound_mod_used = ""
-        if base_core:
-            if purpose_words:
-                best_mod = purpose_words[0]
-                compound = best_mod + base_core
-                if _should_compact_core_phrase(best_mod, base_core) and len(compound) <= _MAX_TOKEN_LEN:
-                    if _try_add(compound):
-                        compound_mod_used = best_mod
-                else:
-                    _try_add(base_core)
-            else:
-                _try_add(base_core)
+        def _try_add(token: str) -> bool:
+            t = _normalize_token(token)
+            key = semantic_key(t)
+            if not t or not key or len(t) < 2 or t.lower() in _STOPWORDS:
+                return False
+            if t.endswith("소재") and len(t) > 2:
+                return False
+            if re.fullmatch(r"(흰색|검정|검은색|화이트|블랙|실버|은색|회색|그레이|빨간색|파란색|노란색|녹색|흰색화이트|블랙검정)", t):
+                return False
+            if len(t) > _MAX_TOKEN_LEN:
+                return False
+            if key in seen:
+                return False
+            seen.add(key)
+            out.append(t)
+            return True
 
-        # ── Phase 2: 용도 "~용" (파이프용, 배관용 등) — 합성어에 쓰인 것 제외 ──
-        for pw in purpose_words:
-            if _is_full():
-                break
-            p = _normalize_token(pw)
-            if not p or p == base_core or p == compound_mod_used:
-                continue
-            # 이미 "용"으로 끝나면 그대로, 4자 이상 합성어에는 "용" 안 붙임
-            if p.endswith("용"):
-                _try_add(p)
-            elif len(p) <= 3 and len(p + "용") <= _MAX_TOKEN_LEN:
-                _try_add(p + "용")
-
-        # ── Phase 3: 사용처 단독 (천장, 벽면, 욕실 등) ──
-        for loc in locations:
-            if _is_full():
-                break
-            _try_add(loc)
-
-        # ── Phase 4: 기능/동작 단독 (고정, 지지, 정리 등) ──
-        # 합성어(파이프고정 등)는 분해해서 개별 단어로 추가
-        # 알려진 단어 사전 구성 (분해용)
-        _ACTION_VOCAB = {
-            "고정", "정리", "방지", "설치", "시공", "조절", "장착",
-            "연결", "분리", "교체", "보호", "차단", "밀봉", "강화",
-            "지지", "수납", "거치", "탈착", "간편", "강력", "다양한",
-            "흔들림", "사이즈", "내구성", "내식성",
-        }
-        _known_words = set(core_words + locations + purpose_words) | _ACTION_VOCAB
-        for f in functions:
-            if _is_full():
-                break
-            fn = _normalize_token(f)
-            if not fn:
-                continue
-            # 3자 이하면 단일 개념어 → 그대로
-            if len(fn) <= 3:
-                _try_add(fn)
-                continue
-            # 4자 이상이면 분해 시도
-            split = _split_compound_once(fn, _known_words)
-            if len(split) >= 2:
-                for part in split:
-                    if not _is_full():
-                        _try_add(part)
-            else:
-                _try_add(fn)
-
-        # ── Phase 5: 부스트 키워드 (끼움형, 나사고정 등) ──
-        for b in boost_terms:
-            if _is_full():
-                break
-            bn = _normalize_token(b)
-            if bn and (not base_core or base_core not in bn):
-                _try_add(bn)
-
-        # ── Phase 6: OCR 보충 ──
-        for t in _tokenize_ocr(ocr_text):
-            if _is_full():
-                break
-            _try_add(t)
-
-        # ── Phase 7: 상품명 보충 ──
-        if fallback_text and not _is_full() and (analysis or _normalize_token(ocr_text)):
-            for m in re.findall(r"[0-9A-Za-z가-힣]{2,14}", _normalize_token(fallback_text)):
+        for group in (identity_terms, usage_terms, function_terms, boost_terms, ocr_terms, fallback_terms):
+            for token in group:
                 if _is_full():
                     break
-                if len(m) >= 2:
-                    _try_add(m)
-
-        # ── 글자수 보강 ──
-        if _char_len() < min_char and fallback_text:
-            for token in _extract_name_only_tokens(fallback_text, market=market):
                 _try_add(token)
-                if _char_len() >= min_char:
-                    break
+            if _is_full():
+                break
 
         if _char_len() < min_char:
-            for cw in core_words:
-                _try_add(cw)
-                if _char_len() >= min_char:
+            remaining = dedupe_semantic(identity_terms + usage_terms + function_terms + boost_terms + ocr_terms + fallback_terms)
+            for token in remaining:
+                if _is_full():
                     break
+                _try_add(token)
 
-        if _char_len() < min_char and (analysis or _normalize_token(ocr_text)):
-            for seg in sorted(_COMMON_SEGMENTS, key=lambda x: -len(x)):
-                _try_add(seg)
-                if _char_len() >= min_char:
-                    break
-
-        return " ".join(out).strip()
+        return " ".join(out[:target_count]).strip()
     except Exception:
         return ""

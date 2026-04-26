@@ -58,6 +58,8 @@ class PipelineConfig:
 
     model_keyword_stage2: str = "" # 비우면 1차 모델 재사용
 
+    keyword_version: str = "2.0"
+
 
 
     max_words: int = 24
@@ -195,6 +197,50 @@ class PipelineConfig:
 
 
 
+def _normalize_keyword_version(version: str) -> str:
+
+    version = str(version or "2.0").strip()
+
+    if version == "1.0":
+        return "1.0"
+    if version == "3.0":
+        return "3.0"
+    return "2.0"
+
+
+
+def _keyword_version_slug(version: str) -> str:
+
+    return f"v{_normalize_keyword_version(version).replace('.', '_')}"
+
+
+
+def _prepare_chunk_session_dir(export_root: str, keyword_version: str, date_tag: str) -> tuple[str, str]:
+
+    version_slug = _keyword_version_slug(keyword_version)
+
+    chunks_root = os.path.join(export_root, "llm_chunks")
+
+    os.makedirs(chunks_root, exist_ok=True)
+
+    session_stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+    session_name = f"session_{date_tag}_{version_slug}_{session_stamp}"
+
+    session_dir = os.path.join(chunks_root, session_name)
+
+    os.makedirs(session_dir, exist_ok=True)
+
+    marker_path = os.path.join(chunks_root, f"_active_{version_slug}.txt")
+
+    with open(marker_path, "w", encoding="utf-8") as f:
+
+        f.write(session_dir)
+
+    return session_dir, version_slug
+
+
+
 def _status(cb, msg: str) -> None:
 
     if cb:
@@ -247,11 +293,12 @@ def _format_naver_keyword_table(items: list, limit: int = 15) -> str:
 
     return "\n".join(lines)
 
-def _split_upload_excel(upload_path: str, export_root: str, chunk_size: int, date_tag: str, status_cb=None):
-    """업로드용 엑셀을 chunk_size 상품씩 분할하여 llm_chunks/ 폴더에 저장."""
+def _split_upload_excel(upload_path: str, export_root: str, chunk_size: int, date_tag: str, status_cb=None,
+                        llm_chunks_dir: str | None = None):
+    """업로드용 엑셀을 chunk_size 상품씩 분할하여 지정 폴더에 저장."""
     import openpyxl
 
-    llm_chunks_dir = os.path.join(export_root, "llm_chunks")
+    llm_chunks_dir = llm_chunks_dir or os.path.join(export_root, "llm_chunks")
     os.makedirs(llm_chunks_dir, exist_ok=True)
 
     wb = openpyxl.load_workbook(upload_path)
@@ -326,18 +373,362 @@ def _split_upload_excel(upload_path: str, export_root: str, chunk_size: int, dat
 def _generate_keyword_skill_md(export_root: str, upload_path: str, date_tag: str, chunk_size: int = 0, status_cb=None,
                                a_name_min: int = 80, a_name_max: int = 100,
                                b_name_min: int = 63, b_name_max: int = 98,
-                               a_tag_count: int = 20, b_tag_count: int = 14):
+                               a_tag_count: int = 20, b_tag_count: int = 14,
+                               keyword_version: str = "2.0"):
     """ocr_only 모드에서 LLM 키워드 생성용 지시서(keyword_skill.md)를 생성."""
+    keyword_version = _normalize_keyword_version(keyword_version)
     md_path = os.path.join(export_root, "keyword_skill.md")
-    llm_result_dir = os.path.join(export_root, "llm_result")
-    os.makedirs(llm_result_dir, exist_ok=True)
 
     upload_basename = os.path.basename(upload_path)
-    result_filename = f"업로드용_{date_tag}_llm.xlsx"
-
-    # 상대 경로 계산
-    llm_result_rel = "llm_result"
+    version_slug = _keyword_version_slug(keyword_version)
+    llm_result_rel = f"llm_result_{version_slug}"
+    llm_result_dir = os.path.join(export_root, llm_result_rel)
+    os.makedirs(llm_result_dir, exist_ok=True)
+    result_filename = f"업로드용_{date_tag}_{version_slug}_llm.xlsx"
     result_rel_path = f"{llm_result_rel}/{result_filename}"
+    if keyword_version == "1.0":
+        version_label = "1.0 레거시 확장형"
+    elif keyword_version == "3.0":
+        version_label = "3.0 타겟형 (소스 엄격 + A/B 독립 패키징)"
+    else:
+        version_label = "2.0 evidence-first"
+
+    if keyword_version == "1.0":
+        rules_block = f"""## 키워드 생성 규칙
+
+### 키워드 우선순위 (이 순서대로 채우세요)
+1. **핵심 키워드** (상품 유형의 표준명) — 검색창에 사용자가 실제로 입력하는 대표 표현
+2. **세부 속성** (규격/소재/용량/호환/기능) — 롱테일 검색 매칭의 핵심
+3. **용도/상황** (사무실용, 차량용, 캠핑, 욕실 등) — 구매 의도와 연결
+4. **형태/별칭** (스틱형, 롱타입, 미니 등) — 다른 표현으로 검색하는 사용자 커버
+
+### 1단계: 카테고리 확인 (필수)
+- 각 상품의 키워드를 작성하기 전에 반드시 **상품이 실제로 어떤 카테고리인지** 확인하세요.
+- OCR 텍스트와 원본 상품명을 기반으로 상품의 **정확한 용도/카테고리**를 판단하세요.
+- ❌ 카테고리명 자체(`생활철물`, `DIY수리`, `운동용품`)를 제목에 넣지 마세요.
+- ✅ 대신 상품의 **구체적 속성/용도** 키워드를 사용하세요.
+
+### 2단계: 상품명 작성
+- 공백으로 구분된 키워드 나열입니다.
+- **{a_name_min}~{a_name_max}자** 범위로 최대한 채우세요. 너무 짧으면 검색 노출이 줄어듭니다.
+- **구조: [핵심상품명(표준명)] + [대표옵션/규격] + [핵심속성] + [용도/사용처] + [별칭/동의어]**
+- **동의어 활용**: 같은 단어를 반복하지 말고, 두 번째 언급부터는 **동의어/별칭**을 사용하세요.
+- **사용처/용도를 충분히 넣으세요**: 이 상품을 어디서/어떻게 쓰는지 (차량, 자동차, 중장비, 산업현장, 가정, 사무실, 욕실 등).
+- 단, OCR이나 원본에 없는 재질/대상/호환 규격을 추정해서 넣지는 마세요.
+
+### 띄어쓰기 규칙 (중요)
+- **자연스러운 띄어쓰기 1회만** 사용 — 의미 단위로 띄어쓰기
+- ❌ 붙여쓰기/띄어쓰기 둘 다 넣지 마세요 (`무선청소기, 무선 청소기` → `무선 청소기`만)
+- ❌ 띄어쓰기 과다/과소 모두 비권장
+- ✅ 수식어-상품명 띄어쓰기: `강력 흡입`, `대용량 배터리`
+- ✅ 브랜드-제품명 띄어쓰기: `노루 페인트`
+
+### 중복 제거 규칙 (필수)
+아래 4종 중복을 반드시 제거하세요. **슬롯 낭비이자 어뷰징 위험**입니다.
+1. **완전 중복**: 동일 단어 반복 (`기모, 기모` → `기모`)
+2. **공백 변형 중복**: 붙/띄만 다른 표현 (`무선청소기` vs `무선 청소기` → 띄어쓰기 형태 1개만)
+3. **재조합 중복**: 같은 단어 순서만 바꾼 것 (`가을 패딩` vs `패딩 가을` → 1개만)
+4. **동의어 중복**: 같은 의미 단어 나열 (`핸드폰/휴대폰/스마트폰` → 검색량 높은 1개만)
+
+### 형태 정규화
+- **형용사/동사 → 명사형**: `강력한` → `강력`, `사용하는` → `사용`, `튼튼한` → `내구성`
+- **연속 공백 제거**: 공백은 항상 1칸
+- **합성어 분리형 우선**: 필요시 합성어 1개만 허용 (`유리롤러 레일롤러` → `유리 레일 롤러`)
+
+### 핵심 원칙
+1. **핵심상품명 맨 앞**: 원본 상품명의 핵심 단어(GS코드 제외)를 상품명 맨 앞에 배치하세요.
+2. **동의어 활용**: 같은 단어를 2번 쓰지 말고, 두 번째부터는 동의어/별칭을 사용하세요.
+3. **속성/용도 중심**: 카테고리 대신 구체적 속성(소재, 규격, 기능)과 용도(차량용, 사무실, 캠핑)로 채우세요.
+4. **길이 확장 허용**: 짧으면 검색 노출 손해가 크므로, **근거 있는 사용처/별칭/속성**으로 폭을 넓히세요.
+5. **근거 없는 확장 금지**: OCR이나 원본에 없는 재질, 호환 규격, 대상층, 사용처는 추정해서 넣지 마세요.
+6. **색상 제외**: 색상은 옵션이므로 키워드에서 제외합니다.
+7. **카테고리명 금지**: 카테고리 일반어로 제목을 부풀리지 마세요.
+
+### ❌ 반드시 제외할 노이즈
+아래 항목은 OCR 텍스트에 포함되어 있더라도 **절대 키워드에 사용하지 마세요**:
+- 상세페이지 템플릿: Product Profile, SIZE, Advantage, Features, Description, Specification
+- 영어 마케팅 문구: Premium Quality, Best Seller, Hot Item, Free Shipping
+- 배송/정책: 배송, 반품, 교환, AS, 원산지, 연락처
+- 판매조건: 무료배송, 할인, 프로모션, 이벤트, 특가, 최저가
+- 검증 곤란 수식어(단독 사용 금지): 최고급, 프리미엄, 고품질, 인기상품, 베스트
+- 엑셀 컬럼명: 옵션입력, 판매가, 재고수, 이미지URL 등 데이터 필드명
+- **다른 상품의 키워드를 섞지 마세요** — 각 행은 독립된 상품입니다
+
+### 3단계: 검색어설정 (Cafe24 태그)
+- **띄어쓰기 없이 붙여쓰기**, 쉼표로 구분합니다.
+- 목표 수량은 **{a_tag_count}개**이며, 가능한 범위에서 넓게 채우세요.
+- 상품명에서 다 넣지 못한 **용도/상황/별칭/동의어**를 여기에 배치하세요.
+- ❌ 띄어쓰기 금지 — `구리스 호스`가 아니라 `구리스호스`
+- ❌ 상품명과 완전히 동일한 조합을 반복하지 마세요.
+- ✅ 다양한 조합으로 검색 커버리지를 넓히되, 다른 상품군 단어는 금지합니다.
+
+### 4단계: 검색키워드
+- 네이버 쇼핑 검색용 상위 키워드
+- 공백 구분, 최대 18개
+- 상품명 + 검색어설정에서 핵심만 추려서 배치하세요.
+- 가격 분리 상품은 **핵심상품명은 유지하고 뒤쪽 키워드 조합만 조금씩 다르게** 하세요.
+"""
+    elif keyword_version == "3.0":
+        rules_block = f"""## 키워드 생성 규칙 (3.0 타겟형)
+
+### 0단계: 허용 근거 소스 (엄격)
+- 사용 가능한 근거: **① 원본 상품명, ② OCR결과 시트의 OCR텍스트** — 이 두 가지만.
+- ❌ 네이버/쿠팡/구글 등 **외부 검색 데이터, 추천어, 연관 검색어, 자동완성**은 근거로 쓰지 마세요. (이 파이프라인은 해당 단계를 스킵합니다.)
+- ❌ 일반 상식/트렌드 키워드로 확장하지 마세요. 근거에 없으면 비워두는 편이 낫습니다.
+- 두 소스에 **동시에 등장**하거나 둘 중 하나에 **명확히 근거**가 있는 토큰만 씁니다.
+
+### 1단계: identity 확정
+- 원본 상품명과 OCR텍스트를 보고 **이 상품이 정확히 무엇인지** 먼저 확정하세요.
+- 핵심상품명(표준명), 핵심 규격, 핵심 재질, 핵심 기능만 우선 추립니다.
+- 카테고리 일반어(`생활철물`, `운동용품`, `주방용품`, `DIY`, `자동차용품`)는 제목에 넣지 마세요.
+
+### 2단계: OCR 수치 필터 (3.0 신규)
+OCR 텍스트에는 의미 없는 숫자가 섞여 있습니다. **다음 기준으로 수치 토큰을 걸러내세요**:
+- ✅ **유지**: 단위가 붙은 규격 — `35mm`, `2M`, `500ml`, `12V`, `100A`, `3평`, `6인치`, `1/2인치`, `M8`, `Ø15`, `800W`
+- ✅ **유지**: 명확한 사이즈/수량 — `2인용`, `4구`, `3단`, `8자루`, `1박스`, `10매`
+- ❌ **제외**: 단위 없는 순수 숫자 — `801`, `3457`, `2024`, `12345`, `00123` (제품코드/바코드/넘버링/연도/페이지 번호)
+- ❌ **제외**: 가격/원 — `9900원`, `19,900`, `₩15000`
+- ❌ **제외**: OCR 깨진 숫자 파편 — `2O2`, `I23`, `O01` 같이 영문/숫자가 혼재되어 의미 불명한 토큰
+- 판단 어려우면 **빼는 쪽**으로. 숫자 토큰은 구매 의도와 거의 무관합니다.
+
+### 3단계: A마켓(홈런마켓) 상품명 — **기능/규격 중심 확장형**
+A마켓은 홈런마켓 상위노출용 긴 제목입니다. 공백 구분 1줄.
+- 목표 길이: **{a_name_min}~{a_name_max}자** (근거 부족 시 더 짧아도 됨)
+- **A마켓 구조**: `[핵심상품명 + 규격]` → `[근거 있는 세부 기능 2~4개]` → `[재질/소재]` → `[호환/적용 규격 1~2개]` → `[별칭/동의어 0~1개]`
+- **A마켓 포커스**: 기능·규격·재질·호환성. "무엇을 할 수 있는가, 어떤 스펙인가"에 집중.
+- 사용처는 A마켓에서는 **최소한만** (0~1개). 사용처는 B마켓의 영역입니다.
+- 동의어는 **안전한 실무 유사어 0~1개만** 허용.
+
+### 4단계: A마켓 검색어설정 (Cafe24 태그)
+- 붙여쓰기 + 쉼표 구분, 목표 **{a_tag_count}개** (근거 있을 때까지만. 빈 슬롯 허용)
+- A 태그는 **identity·규격·기능·재질·호환성** 중심.
+- 상품명에 이미 들어간 단어도 **조합 변형**으로 넣어도 됩니다 (예: 상품명 `호스 컷팅밴드 2M`, 태그에 `호스컷팅밴드`, `컷팅밴드2M`).
+- ❌ 오타/맞춤법 변형, 무관 카테고리, 과장 문구 금지.
+
+### 5단계: A마켓 검색키워드 (쇼핑몰 상위 키워드)
+- 공백 구분, 최대 18개
+- 상품명 + A 태그에서 **핵심만** 추립니다.
+- 가격 분리 상품군은 **핵심상품명은 동일**하게 유지.
+
+### 6단계: B마켓(준비몰) 상품명 — **용도/사용처 중심 독립 패키징**
+⚠️ 3.0부터 B마켓은 A의 단순 축약이 아닙니다. **다른 각도의 패키징**입니다.
+- 목표 길이: **{b_name_min}~{b_name_max}자** (짧아도 됨)
+- **B마켓 구조**: `[핵심상품명 + 규격]` → `[사용처/용도 2~3개]` → `[대상/상황 1~2개]` → `[대표 기능 1개]` → `[옵션 0~1개]`
+- **B마켓 포커스**: "어디서·누가·언제 쓰는가". 욕실/차량/캠핑/사무실/주방 같은 구체적 사용처 중심.
+- 핵심상품명·규격은 A와 **공유**하되, 뒷부분 토큰은 A와 **겹치지 않게** 고르세요.
+- 단, 근거가 부족한 사용처·대상은 추가 금지. OCR/상품명에 흔적이 있어야 함.
+- **A에 이미 들어간 기능/재질 토큰은 B 제목에서 생략**하고, 그 자리를 근거 있는 용도로 채우세요.
+- ❌ A마켓에 없는 **새 상품군/새 재질/새 호환 규격**은 창작 금지. 반면 사용처/용도는 근거가 있으면 B에서 새로 도입 허용.
+
+#### 예시 (가구 연결 볼트)
+- A마켓(기능/규격): `가구 연결 볼트 35mm 편심 체결 니켈 도금 캠록 M8 나사산 조립 철물 커넥터`
+- B마켓(용도/사용처): `가구 연결 볼트 35mm 옷장 서랍장 붙박이장 책상 DIY 조립 가구부속 체결`
+- 핵심상품명(`가구 연결 볼트 35mm`)은 공유, A는 기능/재질(편심/니켈/M8/나사산), B는 사용처(옷장/서랍장/붙박이장/책상)로 분리.
+
+### 7단계: B마켓 검색어설정 (준비몰 태그)
+- 최대 **{b_tag_count}개**, 붙여쓰기 + 쉼표 구분
+- B 태그는 **용도/상황/대상/별칭** 중심. A 태그와의 중복은 최소화.
+- A 태그에 이미 있는 identity/규격 중 1~2개는 유지하고, 나머지는 B 고유 용도 토큰으로.
+
+### 8단계: B마켓 검색키워드 (쇼핑몰 상위 키워드)
+- 공백 구분, 최대 **{b_tag_count // 2}개**
+- B마켓 상품명 + B 태그에서 핵심만. A 검색키워드와 **조합이 달라야** 합니다.
+
+### 9단계: 카테고리 매핑
+- 네이버/쿠팡 카테고리는 상품의 실제 정체성 기준.
+- A/B 같은 카테고리 코드 사용.
+
+### 띄어쓰기 규칙
+- **자연스러운 띄어쓰기 1회만** — 의미 단위로.
+- ❌ 붙여쓰기/띄어쓰기 둘 다 넣지 마세요
+- ✅ 수식어-상품명: `강력 흡입`, `대용량 배터리`
+
+### 중복 제거 (필수)
+1. **완전 중복**: 동일 단어 반복 금지
+2. **공백 변형 중복**: `무선청소기` vs `무선 청소기` → 1개만
+3. **재조합 중복**: `가을 패딩` vs `패딩 가을` → 1개만
+4. **동의어 중복**: 같은 뜻 단어 나열 → 검색량 높은 1개만
+5. **A↔B 교차 중복 (3.0 신규)**: A 제목과 B 제목의 뒷부분 토큰이 **50% 이상 겹치면 B를 다시 작성**하세요. 핵심상품명·규격만 공유하고 뒷부분은 각도를 달리합니다.
+
+### 최종 품질 게이트 (저장 전 행별 자체검사)
+각 행을 저장하기 전에 아래 기준을 통과하는지 확인하세요. 하나라도 걸리면 해당 행만 다시 고칩니다.
+- 상품명에 GS코드, 가격, 배송/할인/이벤트 문구가 남아 있지 않음
+- 단위 없는 숫자, 바코드/제품코드 같은 OCR 숫자 파편이 없음
+- A마켓은 기능/규격/재질 중심, B마켓은 사용처/용도 중심으로 각도가 분리됨
+- A/B 제목의 핵심상품명·규격 이후 토큰이 50% 이상 겹치지 않음
+- 검색어설정은 붙여쓰기이며, 같은 뜻/공백변형/재조합 중복이 없음
+- 검색어설정을 개수 맞추기용 무관 태그로 채우지 않음. 근거가 약하면 목표 개수보다 적어도 됨
+- 다른 행의 상품군/사용처/규격이 섞이지 않음
+
+### 형태 정규화
+- 형용사/동사 → 명사형: `강력한` → `강력`, `사용하는` → `사용`
+- 연속 공백 제거: 공백 1칸
+- 합성어 분리형 우선
+
+### 핵심 원칙 (요약)
+1. **핵심상품명 맨 앞** (GS코드 제외)
+2. **근거는 상품명+OCR만** — 외부 검색/연관어 쓰지 마세요
+3. **OCR 수치 필터 적용** — 단위 없는 순수 숫자 제거
+4. **A는 기능/규격, B는 용도/사용처** — 독립 패키징
+5. **색상 제외** (옵션)
+6. **카테고리명 금지**
+7. **오타/표기변형 생성 금지**
+
+### ❌ 반드시 제외할 노이즈
+- 상세페이지 템플릿: Product Profile, SIZE, Advantage, Features, Description, Specification
+- 영어 마케팅 문구: Premium Quality, Best Seller, Hot Item, Free Shipping
+- 배송/정책: 배송, 반품, 교환, AS, 원산지, 연락처
+- 판매조건: 무료배송, 할인, 프로모션, 이벤트, 특가, 최저가
+- 검증 곤란 수식어(단독 사용 금지): 최고급, 프리미엄, 고품질, 인기상품, 베스트
+- 엑셀 컬럼명: 옵션입력, 판매가, 재고수, 이미지URL 등
+- **단위 없는 OCR 숫자 토큰** (제품코드·연도·페이지번호·바코드)
+- **다른 상품의 키워드 혼입 금지**
+"""
+    else:
+        rules_block = f"""## 키워드 생성 규칙
+
+### 전체 원칙
+- **evidence-first**: 상품명 → OCR/Vision → 검색데이터 순으로만 근거를 사용하세요.
+- **짧아도 됩니다.** 길이를 채우기 위해 무관 키워드를 넣지 마세요.
+- **오타/맞춤법/띄어쓰기 변형을 검색 커버리지 목적으로 생성하지 마세요.**
+- **같은 뜻 중복 금지**: 비슷한 표현을 여러 개 늘어놓지 마세요.
+- **새 카테고리/새 상품군/새 사용처 도입 금지**: 입력 근거가 없으면 비워두세요.
+
+### 1단계: identity 확정
+- 원본 상품명과 OCR/Vision을 보고 **이 상품이 정확히 무엇인지** 먼저 확정하세요.
+- 핵심상품명, 핵심 규격, 핵심 재질, 핵심 기능만 우선 추립니다.
+- 카테고리 일반어(`생활철물`, `운동용품`, `주방용품`)는 제목에 넣지 마세요.
+
+### 2단계: A 제목 생성
+- 공백 구분 키워드 1줄로 작성합니다.
+- 목표 길이는 **{a_name_min}~{a_name_max}자**지만 강제하지 않습니다. 근거가 부족하면 더 짧아도 됩니다.
+- 구조: **[핵심상품명 + 규격] → [근거 있는 기능 1~3개] → [근거 있는 사용처 0~2개] → [재질/옵션]**
+- A마켓도 **근거 있는 범위 안에서만** 확장하세요. 길이 채우기용 보강 금지.
+- 동의어는 **안전한 실무 유사어 0~1개만** 허용합니다.
+
+### 3단계: A 태그 생성
+- 검색어설정은 붙여쓰기 + 쉼표 구분입니다.
+- 목표 수량은 **{a_tag_count}개**지만, **반드시 채우려고 하지 마세요.** 근거 있는 후보만 사용하세요.
+- 오타/표기변형/무관 카테고리/과장 문구 금지.
+- 상품명에서 다 담지 못한 **온토픽 identity/기능/규격** 중심으로 배치하세요.
+
+### 4단계: B 제목 생성
+- B마켓 제목은 **A 제목의 부분집합 + 최소한의 표기 정리**입니다.
+- 새 키워드를 창작하지 말고, A 제목보다 **짧고 선명하게** 만드세요.
+- 구조: **[핵심상품명 + 규격] → [기능 0~2개] → [사용처 0~1개] → [옵션]**
+
+### 5단계: B 태그 생성
+- B 태그는 A 태그에서 **핵심 {b_tag_count}개 이내**만 고릅니다.
+- identity/규격/핵심 기능 우선. usage/material/synonym 중복은 줄이세요.
+
+### 6단계: 카테고리 매핑
+- 마지막에 네이버/쿠팡 카테고리를 매핑합니다.
+- 카테고리는 상품의 실제 정체성을 기준으로 고르고, 제목 길이를 늘리기 위한 카테고리 단어는 넣지 마세요.
+
+### 띄어쓰기 규칙 (중요)
+- **자연스러운 띄어쓰기 1회만** 사용 — 의미 단위로 띄어쓰기
+- ❌ 붙여쓰기/띄어쓰기 둘 다 넣지 마세요 (`무선청소기, 무선 청소기` → `무선 청소기`만)
+- ❌ 띄어쓰기 과다/과소 모두 비권장
+- ✅ 수식어-상품명 띄어쓰기: `강력 흡입`, `대용량 배터리`
+- ✅ 브랜드-제품명 띄어쓰기: `노루 페인트`
+
+### 중복 제거 규칙 (필수)
+아래 4종 중복을 반드시 제거하세요. **슬롯 낭비이자 어뷰징 위험**입니다.
+1. **완전 중복**: 동일 단어 반복 (`기모, 기모` → `기모`)
+2. **공백 변형 중복**: 붙/띄만 다른 표현 (`무선청소기` vs `무선 청소기` → 띄어쓰기 형태 1개만)
+3. **재조합 중복**: 같은 단어 순서만 바꾼 것 (`가을 패딩` vs `패딩 가을` → 1개만)
+4. **동의어 중복**: 같은 의미 단어 나열 (`핸드폰/휴대폰/스마트폰` → 검색량 높은 1개만)
+
+### 형태 정규화
+- **형용사/동사 → 명사형**: `강력한` → `강력`, `사용하는` → `사용`, `튼튼한` → `내구성`
+- **연속 공백 제거**: 공백은 항상 1칸
+- **합성어 분리형 우선**: 필요시 합성어 1개만 허용 (`유리롤러 레일롤러` → `유리 레일 롤러`)
+
+### 핵심 원칙
+1. **핵심상품명 맨 앞**: 원본 상품명의 핵심 단어(GS코드 제외)를 상품명 맨 앞에 배치하세요.
+2. **evidence-first**: 근거 없는 사용처/재질/기능/대상 생성 금지.
+3. **짧아도 허용**: 길이보다 온토픽 여부가 우선입니다.
+4. **오타/표기변형 생성 금지**: 검색 커버리지 목적의 typo-expansion 금지.
+5. **색상 제외**: 색상은 옵션이므로 키워드에서 제외합니다.
+6. **카테고리명 금지**: 카테고리 일반어로 제목을 부풀리지 마세요.
+
+### ❌ 반드시 제외할 노이즈
+아래 항목은 OCR 텍스트에 포함되어 있더라도 **절대 키워드에 사용하지 마세요**:
+- 상세페이지 템플릿: Product Profile, SIZE, Advantage, Features, Description, Specification
+- 영어 마케팅 문구: Premium Quality, Best Seller, Hot Item, Free Shipping
+- 배송/정책: 배송, 반품, 교환, AS, 원산지, 연락처
+- 판매조건: 무료배송, 할인, 프로모션, 이벤트, 특가, 최저가
+- 검증 곤란 수식어(단독 사용 금지): 최고급, 프리미엄, 고품질, 인기상품, 베스트
+- 엑셀 컬럼명: 옵션입력, 판매가, 재고수, 이미지URL 등 데이터 필드명
+- **다른 상품의 키워드를 섞지 마세요** — 각 행은 독립된 상품입니다
+
+### 3단계: 검색어설정 (Cafe24 태그)
+- **띄어쓰기 없이 붙여쓰기**, 쉼표로 구분합니다.
+- 목표는 **{a_tag_count}개**지만, 개수를 맞추려고 무관 태그를 넣지 마세요.
+- 상품명에서 다 못 넣은 **온토픽 identity/기능/규격** 위주로 배치하세요.
+- ❌ 오타/표기변형/맞춤법변형 생성 금지
+- ❌ 상품명과 완전히 동일한 조합 반복 금지
+- ❌ 새 카테고리/새 사용처 도입 금지
+
+### 4단계: 검색키워드
+- 네이버 쇼핑 검색용 상위 키워드
+- 공백 구분, 최대 18개
+- 상품명 + 검색어설정에서 핵심만 추려서 배치
+"""
+
+    if keyword_version == "3.0":
+        b_market_block = f"""## B마켓 시트 (필수 — 반드시 생성)
+결과 엑셀에 **`B마켓`** 시트를 **반드시** 추가하세요. `분리추출후` 시트를 복사한 뒤, 위 **3.0 타겟형 규칙 6~8단계**에 따라 상품명/검색어설정/검색키워드를 **용도/사용처 각도로 독립 작성**합니다.
+⚠️ B마켓 시트가 없거나, A 제목 뒷부분과 50% 이상 겹치면 작업 미완료로 간주합니다.
+
+### B마켓 핵심 원칙 (3.0)
+- B마켓은 **A의 부분집합이 아닙니다.** 핵심상품명·규격만 공유하고, 뒷부분 토큰은 **용도/사용처/대상** 중심으로 **독립 패키징**하세요.
+- 단, 근거(상품명+OCR)에 흔적이 있는 사용처만 도입 가능. 상식에 기대어 창작 금지.
+- A마켓에 없는 **새 상품군/새 재질/새 호환 규격**은 B에서도 금지. 새로 도입 허용은 **사용처/용도 축**뿐.
+
+### B마켓 상품명
+- **글자수 목표**: {b_name_min}~{b_name_max}자 (짧아도 됨)
+- **구조**: [핵심상품명 + 규격] → [사용처 2~3개] → [대상/상황 1~2개] → [대표 기능 1개]
+- **예시**:
+  - A마켓: `가구 연결 볼트 35mm 편심 체결 니켈 도금 캠록 M8 나사산 조립 철물 커넥터`
+  - B마켓: `가구 연결 볼트 35mm 옷장 서랍장 붙박이장 책상 DIY 조립 가구부속`
+
+### B마켓 검색어설정
+- 최대 **{b_tag_count}개**, 붙여쓰기 + 쉼표 구분
+- B 태그는 **용도/상황/대상/별칭** 중심. A 태그와의 중복은 최소화.
+
+### B마켓 검색키워드
+- 공백 구분, 최대 **{b_tag_count // 2}개**
+- A 검색키워드와 **조합이 달라야** 합니다."""
+    else:
+        b_market_block = f"""## B마켓 시트 (필수 — 반드시 생성)
+결과 엑셀에 **`B마켓`** 시트를 **반드시** 추가하세요. `분리추출후` 시트를 복사한 뒤, 아래 "코어 버전" 규칙으로 상품명/검색어설정/검색키워드를 **별도로** 작성합니다.
+⚠️ B마켓 시트가 없으면 작업 미완료로 간주합니다.
+
+### 코어 버전 핵심 원칙
+코어 버전은 **새로 생성이 아니라, A마켓(풀 버전)의 선택/축약**입니다.
+- 풀 버전 토큰의 **부분집합** + 최소한의 표기 정리로 만드세요
+- 근거 없는 새 키워드를 추가하지 마세요 (풀 버전에 없는 단어 금지)
+- 제품 정체성(핵심상품명)을 반드시 유지하세요
+
+### B마켓 상품명 작성 규칙
+- **글자수 목표**: {b_name_min}~{b_name_max}자. 하지만 근거가 부족하면 더 짧아도 됩니다.
+- **구조 (의미 순서 더 엄격)**: [핵심상품명 + 규격] → [기능 0~2개] → [사용처 0~1개]
+- B마켓은 **압축형**: A마켓에서 검증된 토큰만 남겨 짧고 선명하게 만드세요.
+- A마켓에 없는 새 토큰, 새 사용처, 새 재질을 추가하지 마세요.
+- **옵션**: 있으면 맨 끝에 1개만
+- **예시**:
+  - A마켓: `가구 연결 볼트 35mm 편심 체결 고정 조립 니켈 도금 캠록 801 커넥터 캐비닛 서랍장 붙박이장 조립가구 부속`
+  - B마켓: `가구 연결 볼트 35mm 결합 캠 잠금 옷장 선반 가구부속` (A에서 안 쓴 토큰 위주)
+
+### B마켓 검색어설정 (쿠팡 태그)
+- 최대 **{b_tag_count}개**
+- A마켓 검색어에서 **핵심 identity/기능/규격만 선별**하세요.
+- 수량을 채우기 위한 synonym/usage/material 중복 보강 금지
+
+### B마켓 검색키워드 (네이버태그)
+- 최대 **{b_tag_count // 2}개** (A마켓보다 적음)
+- A마켓 검색키워드에서 핵심만 추려서 배치"""
 
     content = f"""# 키워드 생성 지시서
 
@@ -350,6 +741,10 @@ def _generate_keyword_skill_md(export_root: str, upload_path: str, date_tag: str
 
 ## 작업 요약
 같은 폴더에 있는 엑셀 파일(`{upload_basename}`)을 읽고, 각 상품의 **상품명** 과 **검색어설정** 컬럼을 채워서 새 엑셀로 저장하세요.
+
+## 현재 버전
+- **{version_label}**
+- 결과 저장 경로: `{result_rel_path}`
 
 ## ⚠️ 가장 중요: 상품명 = 핵심상품명이 맨 앞
 상품명 컬럼이 최종 쇼핑몰에 노출되는 핵심 필드입니다.
@@ -372,95 +767,7 @@ def _generate_keyword_skill_md(export_root: str, upload_path: str, date_tag: str
 
 OCR결과 시트의 텍스트를 반드시 참고하여 상품의 실제 특성(재질, 규격, 용도 등)을 파악하세요.
 
-## 키워드 생성 규칙
-
-### 키워드 우선순위 (이 순서대로 채우세요)
-1. **핵심 키워드** (상품 유형의 표준명) — 검색창에 사용자가 실제로 입력하는 대표 표현
-2. **세부 속성** (규격/소재/용량/호환/기능) — 롱테일 검색 매칭의 핵심
-3. **용도/상황** (사무실용, 차량용, 캠핑, 욕실 등) — 구매 의도와 연결
-4. **형태/별칭** (스틱형, 롱타입, 미니 등) — 다른 표현으로 검색하는 사용자 커버
-
-### 1단계: 카테고리 확인 (필수)
-각 상품의 키워드를 작성하기 전에 반드시 **상품이 실제로 어떤 카테고리인지** 확인하세요.
-- OCR 텍스트와 원본 상품명을 기반으로 상품의 **정확한 용도/카테고리**를 판단
-- 예: "호스클램프"는 배관부품, "케틀벨"은 운동용품, "간병패드"는 의료/간병용품
-- ❌ 카테고리명 자체(생활철물, DIY수리, 운동용품 등)를 상품명에 넣지 마세요 — 카테고리는 별도 필드로 이미 검색에 반영됩니다
-- ✅ 대신 상품의 **구체적 속성/용도** 키워드를 사용하세요
-
-### 2단계: 상품명 작성
-- 공백으로 구분된 키워드 나열
-- **{a_name_min}~{a_name_max}자** 범위로 최대한 채우세요. 너무 짧으면 검색 노출이 줄어듭니다.
-- **구조 (의미 순서 필수)**: [핵심상품명 + 규격] → [목적(2~3개)] → [특징(2~3개)] → [사용처(2~3개)] → [별칭/동의어]
-  - 핵심상품명: 원본 상품명의 고정 명칭 (예: `가구 연결 볼트 35mm`)
-  - 목적: 이 상품이 해결하는 문제/기능 (예: `체결`, `고정`, `연결`)
-  - 특징: 소재/형태/방식 등 (예: `니켈 도금`, `편심`, `캠록`)
-  - 사용처: 어디에 쓰이는지 (예: `가구`, `캐비닛`, `서랍장`)
-- A마켓은 **확장형**: 각 그룹에서 2~3개씩 단어를 넣어 풍부하게 표현
-- **동의어 활용**: 같은 단어를 반복하지 말고, 두 번째 언급부터는 **동의어/별칭**을 사용하세요
-  - 예: `구리스 호스` → 이후에는 `그리스`로, `호스클램프` → 이후에는 `호스밴드`로
-- **사용처/용도를 충분히 넣으세요**: 이 상품을 어디서/어떻게 쓰는지
-- 예시:
-  - 원본 `가구 연결 볼트 35mm` → `가구 연결 볼트 35mm 편심 체결 고정 조립 니켈 도금 캠록 801 커넥터 캐비닛 서랍장 붙박이장 조립가구 부속`
-  - 원본 `구리스 호스 30cm` → `구리스 호스 30cm 고압 윤활 주입 연장 연결 스프링 그리스 건 커플러 차량 중장비 산업용 정비`
-  - 원본 `창문 잠금후크` → `창문 잠금 후크 방충망 고정 시건 미닫이 걸쇠 PP 강철 창호부속 실내 베란다 방범용`
-
-### A/B 마켓 토큰 분산 배치 (중요)
-전체 후보 토큰을 먼저 충분히 뽑은 뒤, A마켓과 B마켓에 **교차 배치**하세요.
-- 같은 토큰을 A/B에 전부 반복하지 마세요
-- 예: 목적 후보가 5개면 → A마켓 3개, B마켓 2개로 나눠서 배치
-- 특징/사용처도 같은 방식으로 분산
-- 이렇게 하면 두 마켓을 합쳤을 때 검색 커버리지가 최대화됩니다
-
-### 띄어쓰기 규칙 (중요)
-- **자연스러운 띄어쓰기 1회만** 사용 — 의미 단위로 띄어쓰기
-- ❌ 붙여쓰기/띄어쓰기 둘 다 넣지 마세요 (`무선청소기, 무선 청소기` → `무선 청소기`만)
-- ❌ 띄어쓰기 과다/과소 모두 비권장
-- ✅ 수식어-상품명 띄어쓰기: `강력 흡입`, `대용량 배터리`
-- ✅ 브랜드-제품명 띄어쓰기: `노루 페인트`
-
-### 중복 제거 규칙 (필수)
-아래 4종 중복을 반드시 제거하세요. **슬롯 낭비이자 어뷰징 위험**입니다.
-1. **완전 중복**: 동일 단어 반복 (`기모, 기모` → `기모`)
-2. **공백 변형 중복**: 붙/띄만 다른 표현 (`무선청소기` vs `무선 청소기` → 띄어쓰기 형태 1개만)
-3. **재조합 중복**: 같은 단어 순서만 바꾼 것 (`가을 패딩` vs `패딩 가을` → 1개만)
-4. **동의어 중복**: 같은 의미 단어 나열 (`핸드폰/휴대폰/스마트폰` → 검색량 높은 1개만)
-
-### 형태 정규화
-- **형용사/동사 → 명사형**: `강력한` → `강력`, `사용하는` → `사용`, `튼튼한` → `내구성`
-- **연속 공백 제거**: 공백은 항상 1칸
-- **합성어 분리형 우선**: 필요시 합성어 1개만 허용 (`유리롤러 레일롤러` → `유리 레일 롤러`)
-
-### 핵심 원칙
-1. **핵심상품명 맨 앞**: 원본 상품명의 핵심 단어(GS코드 제외)를 상품명 맨 앞에 배치
-2. **동의어 활용**: 같은 단어를 2번 쓰지 말고, 두 번째부터는 동의어/별칭 사용 (구리스→그리스, 걸레→청소포)
-3. **색상 제외**: 색상은 옵션이므로 키워드에서 제외
-4. **카테고리명 금지**: `생활철물`, `운동용품`, `주방용품` 같은 카테고리명을 상품명에 넣지 마세요
-5. **속성/용도 중심**: 카테고리 대신 구체적 속성(소재, 규격, 기능)과 용도(차량용, 사무실, 캠핑)로 채우세요
-6. **{a_name_min}~{a_name_max}자 채우기**: 짧으면 검색 노출 손해. 용도/사용처를 더 넣어서 채우세요
-
-### ❌ 반드시 제외할 노이즈
-아래 항목은 OCR 텍스트에 포함되어 있더라도 **절대 키워드에 사용하지 마세요**:
-- 상세페이지 템플릿: Product Profile, SIZE, Advantage, Features, Description, Specification
-- 영어 마케팅 문구: Premium Quality, Best Seller, Hot Item, Free Shipping
-- 배송/정책: 배송, 반품, 교환, AS, 원산지, 연락처
-- 판매조건: 무료배송, 할인, 프로모션, 이벤트, 특가, 최저가
-- 검증 곤란 수식어(단독 사용 금지): 최고급, 프리미엄, 고품질, 인기상품, 베스트
-- 엑셀 컬럼명: 옵션입력, 판매가, 재고수, 이미지URL 등 데이터 필드명
-- **다른 상품의 키워드를 섞지 마세요** — 각 행은 독립된 상품입니다
-
-### 3단계: 검색어설정 (Cafe24 태그)
-- **띄어쓰기 없이 붙여쓰기**, 쉼표로 구분, **반드시 {a_tag_count}개** 채우세요
-- 각 검색어는 2~4음절 단어 조합을 붙여쓰기 (예: `구리스호스`, `고압연장`, `그리스건`)
-- 상품명에서 다 넣지 못한 **용도/상황/별칭/동의어**를 여기에 배치
-- ❌ 띄어쓰기 금지 — `구리스 호스`가 아니라 `구리스호스`
-- ❌ 상품명과 완전히 동일한 조합을 반복하지 마세요
-- ✅ 다양한 조합으로 {a_tag_count}개를 채우세요
-- 예시: `구리스호스,그리스호스,고압호스,스프링호스,구리스건,그리스건,윤활호스,커플러연결,호스연장,협소공간,차량정비,중장비윤활,오일주입,노즐교체,정비공구,산업용호스,연결호스,고압연장,그리스주입,윤활공구`
-
-### 4단계: 검색키워드
-- 네이버 쇼핑 검색용 상위 키워드
-- 공백 구분, 최대 18개
-- 상품명 + 검색어설정에서 핵심만 추려서 배치
+{rules_block}
 
 ## 병렬 처리 안내
 이 파일이 여러 개로 분할되어 있을 수 있습니다 (chunk_01, chunk_02 등).
@@ -474,34 +781,7 @@ OCR결과 시트의 텍스트를 반드시 참고하여 상품의 실제 특성(
   - 예: `chunk_05_20260323.xlsx` → `{llm_result_rel}/chunk_05_20260323_llm.xlsx`
 - ⚠️ 다른 청크 파일의 결과를 덮어쓰지 마세요. 반드시 입력 파일명 기준으로 저장하세요.
 
-## B마켓 시트 (필수 — 반드시 생성)
-결과 엑셀에 **`B마켓`** 시트를 **반드시** 추가하세요. `분리추출후` 시트를 복사한 뒤, 아래 "코어 버전" 규칙으로 상품명/검색어설정/검색키워드를 **별도로** 작성합니다.
-⚠️ B마켓 시트가 없으면 작업 미완료로 간주합니다.
-
-### 코어 버전 핵심 원칙
-코어 버전은 **새로 생성이 아니라, A마켓(풀 버전)의 선택/축약**입니다.
-- 풀 버전 토큰의 **부분집합** + 최소한의 표기 정리로 만드세요
-- 근거 없는 새 키워드를 추가하지 마세요 (풀 버전에 없는 단어 금지)
-- 제품 정체성(핵심상품명)을 반드시 유지하세요
-
-### B마켓 상품명 작성 규칙
-- **글자수**: {b_name_min}~{b_name_max}자
-- **구조 (의미 순서 더 엄격)**: [핵심상품명 + 규격] → [목적(1개)] → [특징(1개)] → [사용처(1개)]
-- B마켓은 **압축형**: A마켓에서 2~3개씩 쓴 부분을 **1개씩만** 남겨 짧고 선명하게
-- A마켓에서 사용하지 않은 토큰을 우선 배치 (교차 분산)
-- **옵션**: 있으면 맨 끝에 1개만
-- **예시**:
-  - A마켓: `가구 연결 볼트 35mm 편심 체결 고정 조립 니켈 도금 캠록 801 커넥터 캐비닛 서랍장 붙박이장 조립가구 부속`
-  - B마켓: `가구 연결 볼트 35mm 결합 캠 잠금 옷장 선반 가구부속` (A에서 안 쓴 토큰 위주)
-
-### B마켓 검색어설정 (쿠팡 태그)
-- 최대 **{b_tag_count}개** (A마켓 {a_tag_count}개보다 적음)
-- A마켓 검색어에서 **검색량 높은 핵심 {b_tag_count}개만 선별**
-- 규칙은 A마켓과 동일 (붙여쓰기, 쉼표 구분)
-
-### B마켓 검색키워드 (네이버태그)
-- 최대 **{b_tag_count // 2}개** (A마켓보다 적음)
-- A마켓 검색키워드에서 핵심만 추려서 배치
+{b_market_block}
 
 ### B마켓 상품 상세설명 (중요)
 - `분리추출후` 시트의 상품 상세설명에 `<img src='https://gi.esmplus.com/rkghrud/상세1.jpg' />` 같은 **상세태그**가 삽입되어 있을 수 있습니다
@@ -516,7 +796,7 @@ OCR결과 시트의 텍스트를 반드시 참고하여 상품의 실제 특성(
 같은 폴더에 있는 카테고리 트리 파일을 참조하여, 각 상품에 가장 적합한 카테고리를 선택하세요.
 
 ### 네이버 카테고리 (`naver_category_tree.txt`)
-- 파일 형식: `카테고리ID\\t전체경로` (예: `50001032\\t생활/건강>공구>전기용품`)
+- 파일 형식: `카테고리ID\t전체경로` (예: `50001032\t생활/건강>공구>전기용품`)
 - **`분리추출후` 시트**와 **`B마켓` 시트** 모두에 `네이버카테고리코드` 열을 추가하세요
 - 값: 카테고리 ID (숫자만, 예: `50001032`)
 - OCR 텍스트 + 상품명을 종합하여 **가장 구체적인 leaf 카테고리**를 선택하세요
@@ -526,7 +806,7 @@ OCR결과 시트의 텍스트를 반드시 참고하여 상품의 실제 특성(
 
 ### 쿠팡 카테고리 (`coupang_category_tree.txt`)
 - 파일이 있는 경우에만 처리
-- 형식: 네이버와 동일 (`카테고리ID\\t전체경로`)
+- 형식: 네이버와 동일 (`카테고리ID\t전체경로`)
 - `쿠팡카테고리코드` 열을 추가하세요
 
 ### 카테고리 매칭 원칙
@@ -542,7 +822,6 @@ OCR결과 시트의 텍스트를 반드시 참고하여 상품의 실제 특성(
     _status(status_cb, f"keyword_skill.md 생성: {md_path}")
     _status(status_cb, f"LLM 결과 저장 폴더: {llm_result_dir}")
 
-    # 카테고리 트리 파일 복사 (네이버/쿠팡)
     import shutil
     _services_dir = os.path.dirname(os.path.abspath(__file__))
     for cat_file in ("naver_category_tree.txt", "coupang_category_tree.txt"):
@@ -552,20 +831,17 @@ OCR결과 시트의 텍스트를 반드시 참고하여 상품의 실제 특성(
             shutil.copy2(src, dst)
             _status(status_cb, f"{cat_file} → export 폴더 복사")
 
-    # 분할 엑셀 생성 + skill.md 복사
     if chunk_size and chunk_size > 0:
-        _split_upload_excel(upload_path, export_root, chunk_size, date_tag, status_cb)
-        # llm_chunks 폴더에도 keyword_skill.md + 카테고리 트리 복사
-        chunks_dir = os.path.join(export_root, "llm_chunks")
+        chunks_dir, _ = _prepare_chunk_session_dir(export_root, keyword_version, date_tag)
+        _split_upload_excel(upload_path, export_root, chunk_size, date_tag, status_cb, llm_chunks_dir=chunks_dir)
         if os.path.isdir(chunks_dir):
             shutil.copy2(md_path, os.path.join(chunks_dir, "keyword_skill.md"))
             for cat_file in ("naver_category_tree.txt", "coupang_category_tree.txt"):
                 src = os.path.join(_services_dir, cat_file)
                 if os.path.isfile(src):
                     shutil.copy2(src, os.path.join(chunks_dir, cat_file))
-            os.makedirs(os.path.join(chunks_dir, "llm_result"), exist_ok=True)
-            _status(status_cb, f"keyword_skill.md + 카테고리 트리 → llm_chunks/ 복사 완료")
-
+            os.makedirs(os.path.join(chunks_dir, llm_result_rel), exist_ok=True)
+            _status(status_cb, f"keyword_skill.md + 카테고리 트리 → {chunks_dir} 복사 완료 ({llm_result_rel})")
 
 def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple[str, str]:
 
@@ -592,6 +868,18 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
     os.makedirs(export_root, exist_ok=True)
 
     _status(status_cb, f"📁 작업 폴더: {export_root} (phase={cfg.phase})")
+
+    keyword_version = _normalize_keyword_version(getattr(cfg, "keyword_version", "2.0"))
+
+    use_keyword_v2 = keyword_version == "2.0"
+
+    keyword_version_slug = f"v{keyword_version.replace('.', '_')}"
+
+    min_kw_tokens = 5 if use_keyword_v2 else 4
+
+    kw_quality_gate = 12 if use_keyword_v2 else 6
+
+    _status(status_cb, f"키워드 버전: {keyword_version}")
 
 
 
@@ -1930,7 +2218,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                 df_after.at[row_idx, "네이버태그"] = "|".join(result.naver_tags)
 
         # B마켓 키워드도 동시 생성
-        if cfg.enable_b_market and market.upper() != "B":
+        if cfg.enable_b_market:
             b_result = generate_market_keyword_packages(
                 product_name=product_name,
                 source_text=source_text,
@@ -1960,19 +2248,26 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
         base_name: str,
         kw_line: str,
         option_tokens: set,
+        option_text: str = "",
         ocr_text: str = "",
         b_kw_line: str = "",
         prefer_seed_only: bool = False,
         a_final_name: str = "",
     ) -> str:
 
+        if use_keyword_v2:
+
+            return _compose_v2_title(
+                base_name_value=base_name,
+                kw_line_value=b_kw_line or kw_line or base_name,
+                option_text_value=option_text,
+                max_len_value=int(cfg.b_name_max),
+                market_value="B",
+                a_final_name_value=a_final_name,
+            )
+
         def _split_title_tokens(text: str) -> list[str]:
             return [tok for tok in core.normalize_space(str(text or "")).split() if tok]
-
-        def _compact_seed_line(text: str) -> str:
-            tokens = [tok for tok in _split_title_tokens(text) if tok not in option_tokens]
-            line = " ".join(tokens).strip()
-            return line[: int(cfg.b_name_max)].rstrip() if len(line) > int(cfg.b_name_max) else line
 
         def _reorder_away_from_a(tokens: list[str], a_head: set[str]) -> list[str]:
             """A마켓 앞부분과 겹치는 토큰을 뒤로 밀어 B마켓 시작을 차별화"""
@@ -1981,23 +2276,49 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
             front = [t for t in tokens if t not in a_head]
             back = [t for t in tokens if t in a_head]
             if not front:
-                # 모두 겹치면 뒤쪽 절반을 앞으로
                 mid = max(1, len(back) // 2)
                 front = back[mid:]
                 back = back[:mid]
             return front + back
 
+        def _identity_head_tokens() -> list[str]:
+            head: list[str] = []
+            seen: set[str] = set()
+            for tok in _split_title_tokens(base_name):
+                if tok in option_tokens or tok in seen:
+                    continue
+                seen.add(tok)
+                head.append(tok)
+                if len(head) >= 2:
+                    break
+            return head
+
         desired_min = min(int(cfg.b_name_max), max(int(cfg.b_name_min), min(78, int(cfg.b_name_max))))
         b_seed = core.normalize_space(str(b_kw_line or "")).strip()
         a_seed = core.normalize_space(str(kw_line or "")).strip()
-
-        # A마켓 최종 상품명 기준으로 앞 3개 토큰 추출 (더 정확한 비교)
         a_ref = a_final_name or a_seed
         a_head_tokens = set(_split_title_tokens(a_ref)[:3])
+        identity_head = _identity_head_tokens()
+        identity_head_set = set(identity_head)
+
+        def _apply_version_order(tokens: list[str]) -> list[str]:
+            if not tokens:
+                return tokens
+            deduped: list[str] = []
+            seen: set[str] = set()
+            for tok in tokens:
+                if tok in option_tokens or tok in seen:
+                    continue
+                seen.add(tok)
+                deduped.append(tok)
+            if not use_keyword_v2 or not identity_head:
+                return _reorder_away_from_a(deduped, a_head_tokens)
+            tail = [tok for tok in deduped if tok not in identity_head_set]
+            tail = _reorder_away_from_a(tail, {t for t in a_head_tokens if t not in identity_head_set})
+            return identity_head + tail
 
         if prefer_seed_only and not _has_meaningful_title_evidence(ocr_text):
-            concise_tokens = [tok for tok in _split_title_tokens(b_seed or a_seed or base_name) if tok not in option_tokens]
-            concise_tokens = _reorder_away_from_a(concise_tokens, a_head_tokens)
+            concise_tokens = _apply_version_order(_split_title_tokens(b_seed or a_seed or base_name))
             concise = " ".join(concise_tokens).strip()
             if concise:
                 return concise[: int(cfg.b_name_max)].rstrip() if len(concise) > int(cfg.b_name_max) else concise
@@ -2020,12 +2341,10 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                 seed_seen.add(tok)
                 seed_tokens.append(tok)
 
-        # A마켓 앞부분과 겹치는 토큰을 뒤로 재배치
-        seed_tokens = _reorder_away_from_a(seed_tokens, a_head_tokens)
-
+        seed_tokens = _apply_version_order(seed_tokens)
         seed_line = " ".join(seed_tokens).strip()
         out = core.merge_base_name_with_keywords(
-            seed_line,  # base_name 대신 재배치된 seed_line을 base로 전달
+            seed_line,
             seed_line,
             max_words,
             int(cfg.b_name_max),
@@ -2033,29 +2352,24 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
             ocr_text=ocr_text,
         )
 
-        out_tokens = _split_title_tokens(out)
-        # 최종 결과도 A마켓과 시작이 겹치면 재배치
-        out_tokens = _reorder_away_from_a(out_tokens, a_head_tokens)
+        out_tokens = _apply_version_order(_split_title_tokens(out))
         seen = set(out_tokens)
         fill_sources = [b_seed, a_seed, ocr_text, base_name]
         for source in fill_sources:
             for tok in _split_title_tokens(source):
                 if tok in option_tokens or tok in seen:
                     continue
-                candidate_tokens = out_tokens + [tok]
+                candidate_tokens = _apply_version_order(out_tokens + [tok])
                 candidate = " ".join(candidate_tokens).strip()
                 if len(candidate) > int(cfg.b_name_max):
                     continue
                 out_tokens = candidate_tokens
-                seen.add(tok)
+                seen = set(out_tokens)
                 if len(candidate) >= desired_min:
                     return candidate
 
         final_out = " ".join(out_tokens).strip()
         return final_out[: int(cfg.b_name_max)].rstrip() if len(final_out) > int(cfg.b_name_max) else final_out
-
-
-
 
 
     # ── OCR 결과 Excel 로드 (미리 처리된 경우) ──
@@ -2103,6 +2417,563 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
     naver_stage_emitted = False
 
     fatal_gpt_error = ""
+
+
+
+    def _resolve_topic_refs(base_name_value: str, expanded_name_value: str = ""):
+
+        source = core.normalize_space(str(base_name_value or "")).strip()
+
+        if not use_keyword_v2:
+
+            expanded = core.normalize_space(str(expanded_name_value or "")).strip()
+
+            if expanded:
+
+                source = expanded
+
+        return core.build_anchors_from_name(source), core.build_baseline_tokens_from_name(source)
+
+
+
+    def _keyword_noise_score(text: str) -> int:
+
+        weak_tokens = {
+            "그리고", "없이", "필요", "붙이기만", "하면", "간단하게", "해보세요",
+            "강력한", "특수", "제작된", "쉽게", "떨어지지", "않습니다", "끝",
+        }
+
+        score = 0
+
+        for tok in [t for t in re.split(r"\s+", core.normalize_space(str(text or ""))) if t]:
+
+            low = tok.lower()
+
+            if re.fullmatch(r"[A-Za-z]", tok) or low in {"a", "b", "c", "d"}:
+
+                score += 3
+
+                continue
+
+            if tok in weak_tokens:
+
+                score += 2
+
+            if tok.endswith(("로", "에", "을", "를", "이", "가", "은", "는")) and len(tok) <= 5:
+
+                score += 1
+
+        return score
+
+
+
+    def _prune_v2_tokens(tokens: list[str], base_name_value: str = "", option_token_set=None) -> list[str]:
+
+        if not use_keyword_v2:
+
+            return [t for t in tokens if t]
+
+        weak_tokens = {
+            "그리고", "없이", "필요", "필요한", "붙이기만", "붙이기", "붙이면", "하면", "간단하게", "해보세요",
+            "강력한", "특수", "제작된", "쉽게", "떨어지지", "않습니다", "끝",
+            "공구", "구멍", "설치", "후크로", "벽에", "뚫", "뚫을", "와이어",
+        }
+
+        base_refs = set(core.tokenize_korean_words(base_name_value or ""))
+
+        if option_token_set:
+
+            base_refs |= {str(t) for t in option_token_set if str(t).strip()}
+
+        out: list[str] = []
+
+        seen: set[str] = set()
+
+        for raw in tokens:
+
+            tok = core.normalize_space(str(raw or "")).strip()
+
+            if not tok:
+
+                continue
+
+            if re.fullmatch(r"[A-Za-z]", tok) or tok.lower() in {"a", "b", "c", "d"}:
+
+                continue
+
+            tok = re.sub(r"(으로|에서|에게|까지|부터|처럼|로|에|을|를|은|는)$", "", tok)
+
+            tok = core.normalize_space(tok).strip()
+
+            if not tok or tok in weak_tokens:
+
+                continue
+
+            if any(tok.endswith(suffix) for suffix in ("하기", "하게", "하면", "으로", "에서")):
+
+                continue
+
+            if base_refs and tok not in base_refs and any(mark in tok for mark in ("싱글", "더블", "투명", "스텐")):
+
+                continue
+
+            if tok in seen:
+
+                continue
+
+            seen.add(tok)
+
+            out.append(tok)
+
+        return out
+
+
+    def _compose_v2_title(
+        base_name_value: str,
+        kw_line_value: str,
+        option_text_value: str = "",
+        max_len_value: int = 100,
+        market_value: str = "A",
+        a_final_name_value: str = "",
+    ) -> str:
+
+        title_base = core.normalize_space(str(base_name_value or "")).strip()
+
+        if not use_keyword_v2:
+
+            seed = core.normalize_space(str(kw_line_value or title_base)).strip()
+
+            return seed[:max_len_value].rstrip() if len(seed) > max_len_value else seed
+
+        base_tokens = [tok for tok in core.tokenize_korean_words(title_base) if tok]
+
+        option_tokens_ordered = [tok for tok in core.tokenize_korean_words(option_text_value or "") if tok]
+
+        anchors, baseline = _resolve_topic_refs(title_base)
+
+        usage_hints = {"주방", "욕실", "거실", "사무실", "베란다", "현관", "세탁실"}
+
+        install_hints = {"무타공", "접착", "벽부착", "부착", "장착"}
+
+        function_hints = {"거치", "선반거치", "고정", "연결", "체결", "잠금"}
+
+        identity_hints = {
+            "후크", "걸이", "홀더", "거치대", "브라켓", "브래킷", "클립", "고리", "링", "D링",
+            "와이어선반", "랙선반", "선반", "커넥터", "조인트", "캐치", "래치", "가스켓", "가스킷",
+        }
+
+        option_markers = ("싱글", "더블", "투명", "스텐", "화이트", "블랙", "실버", "304")
+
+        def _sem_key(value: str) -> str:
+
+            return re.sub(r"[^0-9A-Za-z가-힣]", "", str(value or "")).lower()
+
+        base_keys = [_sem_key(tok) for tok in base_tokens if _sem_key(tok)]
+
+        def _contained_in_base(token: str) -> bool:
+
+            key = _sem_key(token)
+
+            if not key:
+
+                return False
+
+            for base_key in base_keys:
+
+                if key == base_key:
+
+                    return True
+
+                if len(key) <= len(base_key) and key in base_key:
+
+                    return True
+
+            return False
+
+        candidate_tokens = _prune_v2_tokens(
+            core.tokenize_korean_words(kw_line_value or ""),
+            base_name_value=title_base,
+            option_token_set=set(option_tokens_ordered),
+        )
+
+        buckets = {
+            "identity": [],
+            "install": [],
+            "function": [],
+            "usage": [],
+            "option": [],
+            "extra": [],
+        }
+
+        seen_keys = {_sem_key(tok) for tok in base_tokens if _sem_key(tok)}
+
+        def _push(bucket: str, token: str):
+
+            key = _sem_key(token)
+
+            if not key or key in seen_keys:
+
+                return
+
+            seen_keys.add(key)
+
+            buckets[bucket].append(token)
+
+        for tok in option_tokens_ordered:
+
+            if tok and not _contained_in_base(tok):
+
+                _push("option", tok)
+
+        for tok in candidate_tokens:
+
+            if not tok or _contained_in_base(tok):
+
+                continue
+
+            if tok in option_tokens_ordered or any(marker in tok for marker in option_markers):
+
+                _push("option", tok)
+
+                continue
+
+            if tok in usage_hints:
+
+                _push("usage", tok)
+
+                continue
+
+            if tok in install_hints:
+
+                _push("install", tok)
+
+                continue
+
+            if tok in function_hints or tok.endswith("거치"):
+
+                _push("function", tok)
+
+                continue
+
+            if any(hint in tok or tok in hint for hint in identity_hints):
+
+                _push("identity", tok)
+
+                continue
+
+            if anchors and baseline and core.is_on_topic(tok, anchors, baseline):
+
+                if len(tok) >= 4 or re.search(r"\d", tok):
+
+                    _push("extra", tok)
+
+        a_front = set(core.tokenize_korean_words(a_final_name_value or "")[:4])
+
+        def _reorder_for_b(tokens: list[str]) -> list[str]:
+
+            if not a_front:
+
+                return tokens
+
+            front = [tok for tok in tokens if tok not in a_front]
+
+            back = [tok for tok in tokens if tok in a_front]
+
+            return front + back
+
+        if market_value.upper() == "B":
+
+            ordered_groups = [
+                base_tokens,
+                _reorder_for_b(buckets["install"]),
+                _reorder_for_b(buckets["function"]),
+                _reorder_for_b(buckets["identity"]),
+                _reorder_for_b(buckets["usage"]),
+                _reorder_for_b(buckets["option"]),
+                _reorder_for_b(buckets["extra"]),
+            ]
+
+        else:
+
+            ordered_groups = [
+                base_tokens,
+                buckets["identity"],
+                buckets["install"],
+                buckets["function"],
+                buckets["usage"],
+                buckets["option"],
+                buckets["extra"],
+            ]
+
+        out_tokens: list[str] = []
+
+        out_seen: set[str] = set()
+
+        word_budget = max_words if market_value.upper() != "B" else max(6, min(max_words, 18))
+
+        for group in ordered_groups:
+
+            for tok in group:
+
+                key = _sem_key(tok)
+
+                if not key or key in out_seen:
+
+                    continue
+
+                candidate = " ".join(out_tokens + [tok]).strip()
+
+                if out_tokens and len(candidate) > int(max_len_value):
+
+                    continue
+
+                out_tokens.append(tok)
+
+                out_seen.add(key)
+
+                if len(out_tokens) >= word_budget:
+
+                    break
+
+            if len(out_tokens) >= word_budget:
+
+                break
+
+        final_out = " ".join(out_tokens).strip() or title_base
+
+        return final_out[:int(max_len_value)].rstrip() if len(final_out) > int(max_len_value) else final_out
+
+
+
+    def _infer_v2_builder_analysis(base_name_value: str, option_text_value: str, ocr_text_value: str) -> dict:
+
+        if not use_keyword_v2:
+
+            return {}
+
+        text_value = core.normalize_space(str(ocr_text_value or "")).strip()
+
+        full_name = core.normalize_space(f"{base_name_value} {option_text_value}".strip())
+
+        if not text_value and not full_name:
+
+            return {}
+
+        def _uniq(items):
+
+            out = []
+
+            seen = set()
+
+            for item in items:
+
+                val = core.normalize_space(str(item or "")).strip()
+
+                if not val or val in seen:
+
+                    continue
+
+                seen.add(val)
+
+                out.append(val)
+
+            return out
+
+        anchor_candidates = list(core.build_anchors_from_name(full_name) or [])
+        category = _uniq(anchor_candidates[:3] or core.tokenize_korean_words(full_name)[:3])
+
+        product_type = []
+
+        for term in ("후크", "걸이", "거치대", "홀더", "브라켓", "브래킷", "클립", "고리", "클램프", "커넥터", "조인트"):
+
+            if term in text_value and term not in category:
+
+                product_type.append(term)
+
+        structure = []
+
+        if re.search(r"와이어\s*선반", text_value):
+
+            structure.append("와이어선반")
+
+        if ("랙" in text_value and "선반" in text_value) or re.search(r"랙\s*/\s*와이어\s*선반", text_value):
+
+            structure.append("랙선반")
+
+        if "선반" in text_value and not any("선반" in tok for tok in category + product_type + structure):
+
+            structure.append("선반")
+
+        material_visual = []
+
+        option_clean = core.normalize_space(str(option_text_value or "")).strip()
+
+        if option_clean:
+
+            material_visual.append(option_clean)
+
+        for label, pattern in (("투명", r"투명"), ("스텐", r"스텐|스테인리스"), ("실버", r"실버|은색"), ("화이트", r"화이트|흰색"), ("블랙", r"블랙|검정")):
+
+            if re.search(pattern, f"{full_name} {text_value}"):
+
+                material_visual.append(label)
+
+        installation_method = []
+
+        if re.search(r"무타공|타공\s*없|구멍\s*뚫", text_value):
+
+            installation_method.append("무타공")
+
+        if re.search(r"접착|테이프|붙이기", text_value):
+
+            installation_method.append("접착")
+
+        mount_type = []
+
+        if re.search(r"벽(면)?", text_value):
+
+            mount_type.append("벽부착")
+
+        usage_location = [loc for loc in ("주방", "욕실", "거실", "사무실", "베란다", "현관", "세탁실") if loc in text_value]
+
+        usage_purpose = []
+
+        primary_function = []
+
+        if "선반" in text_value and any(term in f"{full_name} {text_value}" for term in ("후크", "걸이", "거치", "홀더")):
+
+            usage_purpose.append("선반거치")
+
+            primary_function.append("거치")
+
+        return {
+
+            "core_identity": {
+
+                "category": _uniq(category),
+
+                "product_type_correction": _uniq(product_type),
+
+                "structure": _uniq(structure),
+
+                "material_visual": _uniq(material_visual),
+
+            },
+
+            "installation_and_physical": {
+
+                "mount_type": _uniq(mount_type),
+
+                "installation_method": _uniq(installation_method),
+
+            },
+
+            "usage_context": {
+
+                "usage_location": _uniq(usage_location),
+
+                "usage_purpose": _uniq(usage_purpose),
+
+            },
+
+            "functional_inference": {
+
+                "primary_function": _uniq(primary_function),
+
+                "problem_solving_keyword": _uniq(installation_method),
+
+            },
+
+            "search_boost_elements": {
+
+                "installation_keywords": _uniq(installation_method + mount_type),
+
+                "space_keywords": _uniq(structure),
+
+                "benefit_keywords": [],
+
+            },
+
+        }
+
+
+
+    def _build_builder_line(base_name_value: str, option_text_value: str, ocr_text_value: str, vision_analysis_value, market_value: str) -> str:
+
+        fallback_name = core.normalize_space(f"{base_name_value} {option_text_value}".strip()) or core.normalize_space(str(base_name_value or "")).strip()
+
+        analysis_value = vision_analysis_value if isinstance(vision_analysis_value, dict) and vision_analysis_value else {}
+
+        if use_keyword_v2 and not analysis_value:
+
+            analysis_value = _infer_v2_builder_analysis(base_name_value, option_text_value, ocr_text_value)
+
+        builder_line = build_keyword_string(
+
+            ocr_text=ocr_text_value,
+
+            vision_analysis=analysis_value,
+
+            target_count=20,
+
+            fallback_text=fallback_name,
+
+            market=market_value,
+
+        )
+
+        if not use_keyword_v2:
+
+            return builder_line
+
+        builder_tokens = _prune_v2_tokens(
+            core.tokenize_korean_words(builder_line or ""),
+            base_name_value=base_name_value,
+            option_token_set=set(core.tokenize_korean_words(option_text_value or "")),
+        )
+
+        if len(builder_tokens) >= 4:
+
+            return " ".join(builder_tokens)
+
+        recovery_order = [
+            ("core_identity", "category"),
+            ("core_identity", "product_type_correction"),
+            ("core_identity", "structure"),
+            ("installation_and_physical", "installation_method"),
+            ("installation_and_physical", "mount_type"),
+            ("functional_inference", "primary_function"),
+            ("usage_context", "usage_location"),
+            ("core_identity", "material_visual"),
+        ]
+
+        recovered: list[str] = []
+
+        for section, key in recovery_order:
+
+            section_value = analysis_value.get(section, {}) if isinstance(analysis_value, dict) else {}
+
+            values = section_value.get(key, []) if isinstance(section_value, dict) else []
+
+            if isinstance(values, str):
+
+                values = [values]
+
+            for value in values or []:
+
+                tok = core.normalize_space(str(value or "")).strip()
+
+                if tok:
+
+                    recovered.append(tok)
+
+        merged_tokens = core.tokenize_korean_words(base_name_value or "") + recovered + core.tokenize_korean_words(option_text_value or "")
+        merged_tokens = _prune_v2_tokens(
+            merged_tokens,
+            base_name_value=base_name_value,
+            option_token_set=set(core.tokenize_korean_words(option_text_value or "")),
+        )
+        return " ".join(merged_tokens[: max_words])
 
 
 
@@ -2730,43 +3601,78 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                 })
                 continue
 
-            # GPT 프롬프트(최적화됨)를 우선 사용. Vision 데이터는 context로 전달.
-            kw_line, kw_tokens = core.generate_keyword_gpt(
-                prompt_product_name, _sum_text_with_vision, gpt_model_kw, max_words, max_len, min_len,
-                vision_analysis=_vision_analysis,
-            )
+            builder_source_text = _sum_text_with_vision
+            if use_keyword_v2 and str(ocr_raw_text or "").strip():
+                builder_source_text = ocr_raw_text
 
-            gpt_err = getattr(core, "LAST_GPT_ERROR", "")
-            if gpt_err:
-                _status(status_cb, f"GPT 오류: {gpt_err}")
-                if _is_fatal_gpt_error(gpt_err):
-                    fatal_gpt_error = gpt_err
-                    _status(status_cb, "치명적 GPT 오류(404) 감지: 저장 없이 작업 중단")
-                    break
+            builder_line = ""
+            try:
+                builder_line = _build_builder_line(
+                    base_name_value=base_name,
+                    option_text_value=option_text,
+                    ocr_text_value=builder_source_text,
+                    vision_analysis_value=_vision_analysis,
+                    market_value="A",
+                )
+            except Exception:
+                builder_line = ""
+
+            if use_keyword_v2 and gpt_model_kw == "없음":
+                kw_line = builder_line
+                kw_tokens = [t for t in re.split(r"\s+", kw_line) if t] if kw_line else []
+                gpt_err = ""
+            else:
+                # GPT 프롬프트(최적화됨)를 우선 사용. Vision 데이터는 context로 전달.
+                kw_line, kw_tokens = core.generate_keyword_gpt(
+                    prompt_product_name, _sum_text_with_vision, gpt_model_kw, max_words, max_len, min_len,
+                    vision_analysis=_vision_analysis,
+                )
+                gpt_err = getattr(core, "LAST_GPT_ERROR", "")
+                if gpt_err:
+                    _status(status_cb, f"GPT 오류: {gpt_err}")
+                    if _is_fatal_gpt_error(gpt_err):
+                        fatal_gpt_error = gpt_err
+                        _status(status_cb, "치명적 GPT 오류(404) 감지: 저장 없이 작업 중단")
+                        break
+
+            base_anchors, base_baseline = _resolve_topic_refs(base_name)
+            kw_quality = core.keyword_local_score(
+                kw_line,
+                base_name=base_name,
+                anchors=base_anchors,
+                baseline=base_baseline,
+            ) if kw_line else -999
+
+            kw_noise = _keyword_noise_score(kw_line)
 
             # GPT 실패 시 keyword_builder → heuristic fallback
-            if not kw_line or len(kw_line) < 90:
+            if not kw_line or len(kw_tokens) < min_kw_tokens or kw_quality < kw_quality_gate or (use_keyword_v2 and kw_noise >= 6):
                 try:
-                    kw_line = build_keyword_string(
-                        ocr_text=_sum_text_with_vision,
-                        vision_analysis=_vision_analysis,
-                        target_count=20,
-                        fallback_text=prompt_product_name,
-                        market="A",
-                    )
-                    if kw_line:
-                        kw_tokens = [t for t in re.split(r"\s+", kw_line) if t]
+                    builder_tokens = [t for t in re.split(r"\s+", builder_line) if t] if builder_line else []
+                    builder_quality = core.keyword_local_score(
+                        builder_line,
+                        base_name=base_name,
+                        anchors=base_anchors,
+                        baseline=base_baseline,
+                    ) if builder_line else -999
+                    _builder_noise = _keyword_noise_score(builder_line)
+                    _current_noise = _keyword_noise_score(kw_line)
+                    if builder_line and ((builder_quality >= kw_quality or _builder_noise + 2 <= _current_noise or (len(builder_tokens) >= max(3, len(kw_tokens) - 3) and _builder_noise < _current_noise)) if use_keyword_v2 else (builder_quality >= (kw_quality - 4) or len(builder_tokens) >= len(kw_tokens))):
+                        kw_line = builder_line
+                        kw_tokens = builder_tokens
+                        kw_quality = builder_quality
                 except Exception:
-                    kw_line = ""
-                    kw_tokens = []
+                    pass
 
             if not kw_line:
-                kw_line = core._fallback_heuristic(prompt_product_name, _sum_text_with_vision, max_n=max_words)
+                kw_line = builder_line or core._fallback_heuristic(prompt_product_name, _sum_text_with_vision, max_n=max_words)
                 kw_tokens = [t for t in re.split(r"\s+", kw_line) if t]
 
 
 
             search_keywords = ""
+
+            kw_tokens = _prune_v2_tokens(kw_tokens, base_name_value=base_name, option_token_set=option_tokens)
 
             kw_tokens = [t for t in kw_tokens if t not in core.SIZE_WORDS and t not in core.STOPWORDS]
 
@@ -2871,7 +3777,15 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
 
             _sparse_title_mode = (not _vision_analysis) and (not _has_meaningful_title_evidence(sum_text))
-            if _sparse_title_mode and kw_line:
+            if use_keyword_v2:
+                final_line = _compose_v2_title(
+                    base_name_value=base_name,
+                    kw_line_value=kw_line,
+                    option_text_value=option_text,
+                    max_len_value=max_len,
+                    market_value="A",
+                )
+            elif _sparse_title_mode and kw_line:
                 final_line = core.normalize_space(str(kw_line or "")).strip()[:max_len]
             else:
                 final_line = core.merge_base_name_with_keywords(base_name, kw_line, max_words, max_len, option_tokens=option_tokens, ocr_text=sum_text)
@@ -2880,7 +3794,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
             # min_len 미달 시 OCR 텍스트에서 직접 보충
 
-            if len(final_line) < min_len and sum_text:
+            if (not use_keyword_v2) and len(final_line) < min_len and sum_text:
 
                 _ocr_sup, _ocr_toks = core.postprocess_keywords_tokens(sum_text, max_words=max_words, max_len=max_len)
 
@@ -2890,7 +3804,24 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
                 for _t in _ocr_toks:
 
-                    if _t not in _existing and len(_t) >= 2 and _t not in core.STOPWORDS and _t not in core.SIZE_WORDS:
+                    _allow_ocr_token = False
+
+                    if (
+                        _t not in _existing
+                        and len(_t) >= 2
+                        and _t not in core.STOPWORDS
+                        and _t not in core.SIZE_WORDS
+                    ):
+
+                        if use_keyword_v2:
+
+                            _allow_ocr_token = core.is_on_topic(_t, base_anchors, base_baseline)
+
+                        else:
+
+                            _allow_ocr_token = True
+
+                    if _allow_ocr_token:
 
                         _existing.add(_t)
 
@@ -2917,14 +3848,14 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
             df_after.at[idx, "검색키워드"] = search_keywords  # 검색 키워드 추가
 
             # B마켓 상품명 생성 (설정된 글자수)
-            if cfg.enable_b_market and market.upper() != "B":
+            if cfg.enable_b_market:
                 try:
-                    b_kw_seed = build_keyword_string(
-                        ocr_text=sum_text,
-                        vision_analysis=_vision_analysis,
-                        target_count=20,
-                        fallback_text=prompt_product_name,
-                        market="B",
+                    b_kw_seed = _build_builder_line(
+                        base_name_value=base_name,
+                        option_text_value=option_text,
+                        ocr_text_value=builder_source_text,
+                        vision_analysis_value=_vision_analysis,
+                        market_value="B",
                     )
                 except Exception:
                     b_kw_seed = ""
@@ -2932,6 +3863,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                     base_name=base_name,
                     kw_line=kw_line,
                     option_tokens=option_tokens,
+                    option_text=option_text,
                     ocr_text=sum_text,
                     b_kw_line=b_kw_seed,
                     prefer_seed_only=_sparse_title_mode,
@@ -2950,19 +3882,17 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
 
 
-                anchors = core.build_anchors_from_name(final_line)
-
-                baseline = core.build_baseline_tokens_from_name(final_line)
+                anchors, baseline = _resolve_topic_refs(base_name, final_line)
 
 
 
-                lt10_raw = core.generate_longtail10(final_line, sum_text, client=core.client, model_name=gpt_model_lt)
+                lt10_raw = core.generate_longtail10(base_name, sum_text, client=core.client, model_name=gpt_model_lt)
 
                 lt10 = core.clean_naver_kw_list(lt10_raw, anchors=anchors, baseline=baseline)
 
                 if len(lt10) < 10:
 
-                    name_parts = [p for p in re.sub(r"[^0-9가-힣\sA-Za-z]", " ", final_line).split() if len(p) >= 2]
+                    name_parts = [p for p in re.sub(r"[^0-9가-힣\sA-Za-z]", " ", base_name).split() if len(p) >= 2]
 
                     bigrams = [name_parts[i] + name_parts[i + 1] for i in range(len(name_parts) - 1)]
 
@@ -3206,7 +4136,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
                 if len(final_kw) < TARGET_N:
 
-                    name_parts = [p for p in re.sub(r"[^0-9가-힣\sA-Za-z]", " ", final_line).split() if len(p) >= 2]
+                    name_parts = [p for p in re.sub(r"[^0-9가-힣\sA-Za-z]", " ", base_name).split() if len(p) >= 2]
 
                     extra = []
 
@@ -3226,7 +4156,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
                 if len(final_kw) < TARGET_N and core.USE_GPT_BACKFILL:
 
-                    fallback = core._fallback_heuristic(final_line, sum_text, max_n=TARGET_N)
+                    fallback = core._fallback_heuristic(base_name, sum_text, max_n=TARGET_N)
 
                     push([x for x in fallback.split(",") if x])
 
@@ -3258,23 +4188,29 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
                 stage2_source = naver_table if naver_table else naver_info
 
-                stage2_kw, _stage2_tokens = core.generate_keyword_stage2(
+                if use_keyword_v2 and (not stage2_model or stage2_model == "없음"):
 
-                    seed_keywords=final_line,
+                    stage2_kw, _stage2_tokens = "", []
 
-                    naver_keyword_table=stage2_source,
+                else:
 
-                    ocr_text=sum_text,
+                    stage2_kw, _stage2_tokens = core.generate_keyword_stage2(
 
-                    model_name=stage2_model,
+                        seed_keywords=final_line,
 
-                    min_len=50,
+                        naver_keyword_table=stage2_source,
 
-                    max_len=min(max_len, 90),
+                        ocr_text=sum_text,
 
-                    max_words=max_words,
+                        model_name=stage2_model,
 
-                )
+                        min_len=50,
+
+                        max_len=max_len if use_keyword_v2 else min(max_len, 90),
+
+                        max_words=max_words,
+
+                    )
 
                 stage2_err = getattr(core, "LAST_GPT_ERROR", "")
 
@@ -3290,19 +4226,31 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
                     _st2_ok = True
 
-                    _st2_toks = set(core.tokenize_korean_words(stage2_kw))
+                    _st2_toks = core.tokenize_korean_words(stage2_kw)
 
-                    _base_toks = set(core.tokenize_korean_words(final_line))
+                    _base_toks = core.tokenize_korean_words(base_name)
+
+                    _seed_score = core.keyword_local_score(final_line, base_name=base_name, anchors=anchors, baseline=baseline)
+
+                    _stage2_score = core.keyword_local_score(stage2_kw, base_name=base_name, anchors=anchors, baseline=baseline)
 
                     if len(_st2_toks) < 2:
 
                         _st2_ok = False
 
-                    if _base_toks and len(_st2_toks & _base_toks) == 0:
+                    if _base_toks and core.semantic_overlap_count(_st2_toks, _base_toks) == 0:
 
                         _st2_ok = False
 
                     if not core.is_on_topic(stage2_kw, anchors, baseline):
+
+                        _st2_ok = False
+
+                    if use_keyword_v2 and _stage2_score < _seed_score:
+
+                        _st2_ok = False
+
+                    if (not use_keyword_v2) and _stage2_score < (_seed_score - 4):
 
                         _st2_ok = False
 
@@ -3343,12 +4291,12 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
                 # B마켓 전용 상품명 생성 (토큰 순서/글자수 다르게)
                 try:
-                    b_kw_line = build_keyword_string(
-                        ocr_text=_sum_text_with_vision,
-                        vision_analysis=_vision_analysis,
-                        target_count=20,
-                        fallback_text=prompt_product_name,
-                        market="B",
+                    b_kw_line = _build_builder_line(
+                        base_name_value=base_name,
+                        option_text_value=option_text,
+                        ocr_text_value=builder_source_text,
+                        vision_analysis_value=_vision_analysis,
+                        market_value="B",
                     )
                 except Exception:
                     b_kw_line = ""
@@ -3357,6 +4305,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                     base_name=base_name,
                     kw_line=kw_line,
                     option_tokens=option_tokens,
+                    option_text=option_text,
                     ocr_text=sum_text,
                     b_kw_line=b_kw_line,
                     prefer_seed_only=_sparse_title_mode,
@@ -3424,9 +4373,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
             else:
 
-                anchors = core.build_anchors_from_name(final_line)
-
-                baseline = core.build_baseline_tokens_from_name(final_line)
+                anchors, baseline = _resolve_topic_refs(base_name, final_line)
 
 
 
@@ -3470,23 +4417,29 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
                 stage2_source = naver_table if naver_table else naver_info
 
-                stage2_kw, _stage2_tokens = core.generate_keyword_stage2(
+                if use_keyword_v2 and (not stage2_model or stage2_model == "없음"):
 
-                    seed_keywords=final_line,
+                    stage2_kw, _stage2_tokens = "", []
 
-                    naver_keyword_table=stage2_source,
+                else:
 
-                    ocr_text=sum_text,
+                    stage2_kw, _stage2_tokens = core.generate_keyword_stage2(
 
-                    model_name=stage2_model,
+                        seed_keywords=final_line,
 
-                    min_len=50,
+                        naver_keyword_table=stage2_source,
 
-                    max_len=min(max_len, 90),
+                        ocr_text=sum_text,
 
-                    max_words=max_words,
+                        model_name=stage2_model,
 
-                )
+                        min_len=50,
+
+                        max_len=max_len if use_keyword_v2 else min(max_len, 90),
+
+                        max_words=max_words,
+
+                    )
 
                 stage2_err = getattr(core, "LAST_GPT_ERROR", "")
 
@@ -3502,19 +4455,31 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
                     _st2_ok = True
 
-                    _st2_toks = set(core.tokenize_korean_words(stage2_kw))
+                    _st2_toks = core.tokenize_korean_words(stage2_kw)
 
-                    _base_toks = set(core.tokenize_korean_words(final_line))
+                    _base_toks = core.tokenize_korean_words(base_name)
+
+                    _seed_score = core.keyword_local_score(final_line, base_name=base_name, anchors=anchors, baseline=baseline)
+
+                    _stage2_score = core.keyword_local_score(stage2_kw, base_name=base_name, anchors=anchors, baseline=baseline)
 
                     if len(_st2_toks) < 2:
 
                         _st2_ok = False
 
-                    if _base_toks and len(_st2_toks & _base_toks) == 0:
+                    if _base_toks and core.semantic_overlap_count(_st2_toks, _base_toks) == 0:
 
                         _st2_ok = False
 
                     if not core.is_on_topic(stage2_kw, anchors, baseline):
+
+                        _st2_ok = False
+
+                    if use_keyword_v2 and _stage2_score < _seed_score:
+
+                        _st2_ok = False
+
+                    if (not use_keyword_v2) and _stage2_score < (_seed_score - 4):
 
                         _st2_ok = False
 
@@ -3555,12 +4520,12 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
                 # B마켓 전용 상품명 생성 (토큰 순서/글자수 다르게)
                 try:
-                    b_kw_line = build_keyword_string(
-                        ocr_text=_sum_text_with_vision,
-                        vision_analysis=_vision_analysis,
-                        target_count=20,
-                        fallback_text=prompt_product_name,
-                        market="B",
+                    b_kw_line = _build_builder_line(
+                        base_name_value=base_name,
+                        option_text_value=option_text,
+                        ocr_text_value=builder_source_text,
+                        vision_analysis_value=_vision_analysis,
+                        market_value="B",
                     )
                 except Exception:
                     b_kw_line = ""
@@ -3569,6 +4534,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
                     base_name=base_name,
                     kw_line=kw_line,
                     option_tokens=option_tokens,
+                    option_text=option_text,
                     ocr_text=sum_text,
                     b_kw_line=b_kw_line,
                     prefer_seed_only=_sparse_title_mode,
@@ -3630,6 +4596,8 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
                         "GPT_ERROR": gpt_err,
 
+                        "로컬빌더": builder_line,
+
                         "키워드정렬": kw_line,
 
                         "검색키워드": search_keywords,
@@ -3642,11 +4610,11 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
                     })
 
-        except Exception:
+        except Exception as e:
 
             if debug_on:
 
-                debug_rows.append({"오류행": int(idx), "오류": "행 처리 중 예외"})
+                debug_rows.append({"오류행": int(idx), "오류": f"{type(e).__name__}: {e}"})
 
             continue
 
@@ -3666,7 +4634,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    save_path = os.path.join(export_root, f"상품전처리GPT_{timestamp}.xlsx")
+    save_path = os.path.join(export_root, f"상품전처리GPT_{keyword_version_slug}_{timestamp}.xlsx")
 
     def _seq_path(directory: str, prefix: str, ext: str) -> str:
 
@@ -3724,7 +4692,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
 
 
-    upload_path = _seq_path(export_root, f"업로드용_{date_tag}", ".xlsx")
+    upload_path = _seq_path(export_root, f"업로드용_{date_tag}_{keyword_version_slug}", ".xlsx")
 
     # B마켓 DataFrame 생성
     df_b_market = None
@@ -3881,7 +4849,8 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
         _generate_keyword_skill_md(export_root, upload_path, date_tag, chunk_size=cfg.chunk_size, status_cb=status_cb,
                                    a_name_min=cfg.a_name_min, a_name_max=cfg.a_name_max,
                                    b_name_min=cfg.b_name_min, b_name_max=cfg.b_name_max,
-                                   a_tag_count=cfg.a_tag_count, b_tag_count=cfg.b_tag_count)
+                                   a_tag_count=cfg.a_tag_count, b_tag_count=cfg.b_tag_count,
+                                   keyword_version=keyword_version)
 
     # ── 상세 없는 상품 별도 파일 저장 (원본 형식 유지) ──
 

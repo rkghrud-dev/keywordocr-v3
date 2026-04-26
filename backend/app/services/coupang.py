@@ -40,9 +40,9 @@ def _load_kv_file(filename: str) -> dict[str, str]:
     return kv
 
 _COUPANG_KEYS = _load_kv_file("coupang_wing_api.txt")
-ACCESS_KEY = _COUPANG_KEYS.get("access_key", "e747c511-5917-46f6-a601-209db9719d5e")
-SECRET_KEY = _COUPANG_KEYS.get("secret_key", "ed887699fd65bad93f1195513ae3bdb12bc94be7")
-VENDOR_ID = _COUPANG_KEYS.get("vendor_id", "A00704210")
+ACCESS_KEY = _COUPANG_KEYS.get("access_key", "")
+SECRET_KEY = _COUPANG_KEYS.get("secret_key", "")
+VENDOR_ID = _COUPANG_KEYS.get("vendor_id", "")
 
 OUTBOUND_CODE = 23273329
 RETURN_CENTER_CODE = 1002256451
@@ -51,6 +51,9 @@ RETURN_CENTER_CODE = 1002256451
 # ─── API 클라이언트 ─────────────────────────────
 
 def _auth(method: str, path: str, query: str | None = None) -> str:
+    if not ACCESS_KEY or not SECRET_KEY:
+        raise RuntimeError(f"쿠팡 API 키를 찾을 수 없습니다: {os.path.join(_KEY_DIR, 'coupang_wing_api.txt')}")
+
     now = datetime.now(timezone.utc)
     dt = now.strftime("%y%m%dT%H%M%SZ")
     message = dt + method + path + (query or "")
@@ -146,7 +149,7 @@ def _load_image_selections(export_root: str) -> dict[str, dict[str, object]]:
         return _IMAGE_SELECTION_CACHE[export_root]
 
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             raw = json.load(f)
         parsed: dict[str, dict[str, object]] = {}
         for key, value in raw.items():
@@ -200,20 +203,29 @@ def _pick_local_listing_images(row: dict) -> list[str]:
         return []
 
     selection = _load_image_selections(export_root).get(gs9, {})
-    main_index = selection.get("main")
-    if not isinstance(main_index, int):
-        main_index = 1 if len(files) > 1 else 0
-    if main_index < 0 or main_index >= len(files):
-        main_index = 1 if len(files) > 1 else 0
+    ordered: list[str] = []
+    seen: set[int] = set()
+    has_explicit_selection = False
 
-    ordered = [files[main_index]]
-    seen = {main_index}
+    main_index = selection.get("main")
+    if isinstance(main_index, int) and 0 <= main_index < len(files):
+        ordered.append(files[main_index])
+        seen.add(main_index)
+        has_explicit_selection = True
 
     additional = selection.get("additional") if isinstance(selection.get("additional"), list) else []
     for idx in additional:
         if isinstance(idx, int) and 0 <= idx < len(files) and idx not in seen:
             ordered.append(files[idx])
             seen.add(idx)
+            has_explicit_selection = True
+
+    if has_explicit_selection:
+        return ordered[:10]
+
+    default_main = 1 if len(files) > 1 else 0
+    ordered.append(files[default_main])
+    seen.add(default_main)
 
     for idx, file_path in enumerate(files):
         if idx in seen:
@@ -221,7 +233,6 @@ def _pick_local_listing_images(row: dict) -> list[str]:
         ordered.append(file_path)
 
     return ordered[:10]
-
 
 def _resolve_public_image_url(image_path: str) -> str:
     cached = _COUPANG_PUBLIC_IMAGE_CACHE.get(image_path)
@@ -240,23 +251,15 @@ def _build_fallback_image_urls(row: dict, detail_html: str) -> list[str]:
 
     product_img_urls = []
     representative_candidates = []
-    for value in (row.get("이미지등록(목록)"), row.get("이미지등록(상세)")):
+    for value in (row.get("이미지등록(목록)"), row.get("이미지등록(추가)")):
         if not value:
             continue
         representative_candidates.extend(
             [u.strip() for u in _re.split(r"[|\n]", str(value)) if u and str(u).strip()]
         )
 
-    detail_image_candidates = []
-    if detail_html:
-        html_imgs = _re.findall(r"<img[^>]+src=[\"']([^\"']+)", detail_html)
-        gs_code = row.get("자체 상품코드") or ""
-        for u in html_imgs:
-            if gs_code and gs_code in u and _re.search(r"/\d+\.(jpg|jpeg|png|bmp|webp)$", u, _re.IGNORECASE):
-                detail_image_candidates.append(u)
-
     seen_candidates = set()
-    for candidate in representative_candidates + detail_image_candidates:
+    for candidate in representative_candidates:
         candidate = str(candidate).strip()
         if not candidate or candidate in seen_candidates:
             continue
@@ -310,7 +313,12 @@ def read_source_file(file_path: str) -> list[dict]:
 def parse_options(option_str: str | None, extra_price_str: str | None = None) -> list[dict]:
     if not option_str:
         return []
-    m = re.findall(r"([A-Z])\s+([^,}]+)", option_str)
+
+    option_text = str(option_str).strip()
+    brace_match = re.match(r"^옵션\{(.*)\}$", option_text)
+    if brace_match:
+        option_text = brace_match.group(1)
+
     prices = []
     if extra_price_str:
         # 구분자: , 또는 |
@@ -321,12 +329,15 @@ def parse_options(option_str: str | None, extra_price_str: str | None = None) ->
                     prices.append(int(float(p)))
                 except ValueError:
                     prices.append(0)
+
     options = []
-    for i, (_label, value) in enumerate(m):
+    parts = [part.strip() for part in re.split(r"[,|]", option_text) if part and part.strip()]
+    for i, part in enumerate(parts):
+        match = re.match(r"^[A-Z]\s*(.+)$", part)
+        value = match.group(1) if match else part
         price = prices[i] if i < len(prices) else 0
         options.append({"name": value.strip(), "price": price})
     return options
-
 
 def build_notice_content(category_meta: dict) -> list[dict]:
     notices = category_meta.get("data", {}).get("noticeCategories", [])
@@ -367,6 +378,66 @@ def build_attributes(category_meta: dict) -> list[dict]:
             entry["unitCodeName"] = a["basicUnit"]
         result.append(entry)
     return result
+
+
+def build_option_attributes(option_name: str | None, category_meta: dict) -> list[dict]:
+    option_text = str(option_name or "").strip()
+    if not option_text:
+        return []
+
+    color_value = None
+    for label, pattern in (
+        ("투명", r"투명"),
+        ("스텐", r"스텐|스테인리스"),
+        ("실버", r"실버|은색"),
+        ("화이트", r"화이트|흰색"),
+        ("블랙", r"블랙|검정"),
+    ):
+        if re.search(pattern, option_text, re.IGNORECASE):
+            color_value = label
+            break
+
+    quantity_value = None
+    count_match = re.search(r"(\d+)\s*(개|ea|EA|p|P)", option_text)
+    if count_match:
+        quantity_value = f"{count_match.group(1)}개"
+    elif re.search(r"싱글|single", option_text, re.IGNORECASE):
+        quantity_value = "1개"
+    elif re.search(r"더블|double", option_text, re.IGNORECASE):
+        quantity_value = "2개"
+
+    result = []
+    for attr in category_meta.get("data", {}).get("attributes", []):
+        if attr.get("exposed") != "EXPOSED":
+            continue
+
+        attr_name = str(attr.get("attributeTypeName", "")).strip()
+        if attr_name == "색상" and color_value:
+            result.append({"attributeTypeName": attr_name, "attributeValueName": color_value})
+        elif attr_name in ("수량", "총 수량") and quantity_value:
+            result.append({"attributeTypeName": attr_name, "attributeValueName": quantity_value})
+
+    return result
+
+
+def _merge_attributes(base_attributes: list[dict], extra_attributes: list[dict]) -> list[dict]:
+    merged = [dict(attr) for attr in base_attributes]
+    name_to_index = {
+        str(attr.get("attributeTypeName", "")).strip(): index
+        for index, attr in enumerate(merged)
+    }
+
+    for attr in extra_attributes:
+        attr_name = str(attr.get("attributeTypeName", "")).strip()
+        if not attr_name:
+            continue
+        if attr_name in name_to_index:
+            merged[name_to_index[attr_name]] = dict(attr)
+        else:
+            name_to_index[attr_name] = len(merged)
+            merged.append(dict(attr))
+
+    return merged
 
 
 def build_coupang_product(row: dict, category_code: int, category_meta: dict) -> dict:
@@ -425,7 +496,7 @@ def build_coupang_product(row: dict, category_code: int, category_meta: dict) ->
             "emptyBarcodeReason": "",
             "notices": notice_content,
             "attributes": attributes,
-            "contents": [{"contentsType": "HTML", "contentDetails": [{"content": detail_html, "detailType": "TEXT"}]}],
+            "contents": [{"contentsType": "TEXT", "contentDetails": [{"content": detail_html, "detailType": "TEXT"}]}],
             "images": images,
             "searchTags": tag_list,
         }
@@ -433,7 +504,14 @@ def build_coupang_product(row: dict, category_code: int, category_meta: dict) ->
     items = []
     if options:
         for i, opt in enumerate(options):
-            items.append(_make_item(opt["name"], sale_price + opt["price"], original_price + opt["price"], f"{ext_sku}_{i+1}" if ext_sku else ""))
+            item = _make_item(
+                opt["name"],
+                sale_price + opt["price"],
+                original_price + opt["price"],
+                f"{ext_sku}_{i+1}" if ext_sku else "",
+            )
+            item["attributes"] = _merge_attributes(attributes, build_option_attributes(opt["name"], category_meta))
+            items.append(item)
     else:
         items.append(_make_item(display_name, sale_price, original_price, ext_sku))
 

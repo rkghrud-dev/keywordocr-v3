@@ -1,3 +1,6 @@
+> REFERENCE ONLY / 현재 런타임 미사용
+> 이 파일을 수정해도 현재 코드 경로의 동작은 직접 바뀌지 않습니다. 실제 동작은 `backend/app/services/market_keywords.py` 와 `backend/app/services/legacy_core.py`를 기준으로 합니다.
+
 # Market Keyword Generation Prompt
 
 ## Role

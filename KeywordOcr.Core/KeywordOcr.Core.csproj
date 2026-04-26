@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <RootNamespace>KeywordOcr.Core</RootNamespace>
+    <AssemblyName>KeywordOcr.Core</AssemblyName>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Excel 읽기/쓰기 -->
+    <PackageReference Include="ClosedXML" Version="0.102.2" />
+    <!-- OCR (tessdata 폴더 필요: kor.traineddata, eng.traineddata) -->
+    <PackageReference Include="Tesseract" Version="5.2.0" />
+    <!-- 이미지 처리 (로고 합성, 대비, 샤프닝) -->
+    <PackageReference Include="SkiaSharp" Version="2.88.8" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="2.88.8" />
+  </ItemGroup>
+</Project>

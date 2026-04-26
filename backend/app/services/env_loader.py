@@ -74,8 +74,7 @@ def _key_search_dirs() -> list[str]:
 
 
 def key_file_candidates(filename: str) -> list[str]:
-    base = _app_root()
-    candidates = [filename, os.path.join(base, filename)]
+    candidates: list[str] = []
     for d in _key_search_dirs():
         candidates.append(os.path.join(d, filename))
 
@@ -178,12 +177,10 @@ def _load_from_external_key_files() -> None:
 
 def ensure_env_loaded(dotenv_path: str | None = None) -> str | None:
     loaded_from = None
-    candidates = []
-    if dotenv_path:
-        candidates.append(dotenv_path)
-    candidates.append(os.path.join(_app_root(), ".env"))
-    candidates.append(os.path.join(_desktop_key_dir(), "keywordocr.env"))
-    candidates.append(os.path.join(_desktop_key_dir(), ".env"))
+    candidates = [
+        os.path.join(_desktop_key_dir(), "keywordocr.env"),
+        os.path.join(_desktop_key_dir(), ".env"),
+    ]
 
     seen = set()
     for path in candidates:

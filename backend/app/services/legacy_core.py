@@ -1129,244 +1129,251 @@ NEG_DOMAIN = {
 
 
 def build_anchors_from_name(product_name: str) -> set:
-
-
-
-    """상품명에서 핵심 앵커 추출 (재단기/커팅/절단/용지 규격 등)"""
-
-
-
-    s = re.sub(r"[^0-9가-힣\sA-Za-z]", " ", str(product_name))
-
-
-
-    toks = [t for t in s.split() if 1 < len(t) <= 12]
-
-
-
-    anchors = set()
-
-
-
-    for t in toks:
-
-
-
-        if re.fullmatch(r"[Aa]\d{1,2}", t): anchors.add(t.upper())
-
-
-
-        if "재단기" in t or t == "재단기": anchors.update({"재단기","재단"})
-
-
-
-        if "재단" in t: anchors.update({"재단"})
-
-
-
-        if any(k in t for k in ["커팅","컷팅","컷터","절단"]):
-
-
-
-            anchors.update({"커팅","컷팅","컷터","절단"})
-
-
-
-        if "문서" in t: anchors.add("문서")
-
-
-
-        if ("종이" in t) or ("용지" in t): anchors.update({"종이","용지"})
-
-
-
+    """상품명에서 정체성 중심 앵커를 추출한다."""
+    anchors = _collect_identity_tokens_from_name(product_name, max_main=4, max_total=6)
     if not anchors:
-
-
-
-        for t in toks:
-
-
-
-            if any(k in t for k in ["재단","재단기","커팅","컷터","절단"]):
-
-
-
-                anchors.add(t)
-
-
-
-    return anchors
-
-
-
-
-
+        anchors = list(build_baseline_tokens_from_name(product_name))[:4]
+    return set(anchors)
 
 
 def _clean_one_kw(k: str) -> str:
-
-
-
     k = (k or "").strip()
-
-
-
-    k = re.sub(r"[^\uAC00-\uD7A3A-Za-z0-9]", "", k)
-
-
-
+    k = re.sub(r"[^가-힣A-Za-z0-9]", "", k)
     k = re.sub(r"^\d+", "", k)   # leading digits 제거
-
-
-
     k = re.sub(r"\d+$", "", k)   # trailing digits 제거
-
-
-
     return k
 
 
+_IDENTITY_TOKEN_RE = re.compile(r"[0-9A-Za-z가-힣]+")
 
 
+_STRONG_IDENTITY_RE = re.compile(
+    r"^(?:[A-Za-z]{1,4}\d+[A-Za-z0-9]*|[A-Za-z]{2,5}|\d+(?:mm|cm|m|ml|l|kg|g|w|v|a|호|인치)|304|316|m\d+)$",
+    re.IGNORECASE,
+)
 
 
-
-def build_baseline_tokens_from_name(product_name: str) -> set:
-
-
-
-    """현재 상품명 키워드를 baseline으로 사용(벗어나면 제외)"""
-
-
-
-    s = re.sub(r"[^0-9가-힣\sA-Za-z]", " ", str(product_name))
+_WEAK_IDENTITY_WORDS = {
+    "고정", "설치", "연결", "장착", "정리", "방지", "보호", "부품", "용품", "도구", "세트", "옵션",
+    "사용", "사용처", "실내", "실외", "도어", "문", "작업", "현장", "시공", "수리", "교체", "체결",
+    "부착", "결합", "문맥", "대상", "기능", "문제", "해결", "규격", "사이즈", "재질", "소재", "색상",
+    "컬러", "형태", "구조", "전용", "일반", "기본", "다용도", "휴대용", "간편", "강력", "다양한",
+    "기타", "호환", "필수", "상품", "제품", "액세서리", "악세서리",
+}
 
 
-
-    toks = [t for t in s.split() if 2 <= len(t) <= 12 and t not in STOPWORDS]
-
+_WEAK_IDENTITY_SUFFIXES = ("용품", "부품", "도구", "세트", "옵션")
 
 
-    return set(toks)
+def _normalize_identity_token(token: str) -> str:
+    token = normalize_space(str(token or "")).replace(" ", "")
+    token = re.sub(r"[^0-9A-Za-z가-힣]", "", token)
+    if not token:
+        return ""
+    replacements = {
+        "디링": "D링",
+        "가스킷": "가스켓",
+        "개스킷": "가스켓",
+        "브래킷": "브라켓",
+        "스텐": "스테인리스",
+    }
+    return replacements.get(token, token)
 
 
+def _identity_semantic_key(token: str) -> str:
+    token = _normalize_identity_token(token).lower()
+    token = token.replace("차량용", "차량")
+    token = re.sub(r"(용|형|식)$", "", token)
+    return token
 
 
+def _split_identity_name_tokens(product_name: str) -> list[str]:
+    clean_name = re.sub(GS_CODE_PATTERN, " ", str(product_name or ""))
+    out = []
+    seen = set()
+    for raw in _IDENTITY_TOKEN_RE.findall(clean_name):
+        token = _normalize_identity_token(raw)
+        if not token or not (2 <= len(token) <= 12):
+            continue
+        key = _identity_semantic_key(token)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(token)
+    return out
 
 
-
-def is_consistent_with_baseline(keyword: str, baseline: set) -> bool:
-
-
-
-    """후보 키워드가 상품명 기반 키워드와 충분히 겹치는지(부분문자열 매칭)"""
-
-
-
-    k = _clean_one_kw(keyword)
-
-
-
-    if not baseline:
-
-
-
+def _is_strong_identity_token(token: str) -> bool:
+    token = _normalize_identity_token(token)
+    if not token:
+        return False
+    if _STRONG_IDENTITY_RE.fullmatch(token):
         return True
+    if re.search(r"\d", token):
+        return True
+    return bool(re.search(r"[A-Za-z]", token) and re.search(r"[가-힣]", token))
 
 
-
-    for b in baseline:
-
-
-
-        if b and b in k:
-
-
-
-            return True
-
-
-
+def _is_weak_identity_token(token: str) -> bool:
+    token = _normalize_identity_token(token)
+    key = _identity_semantic_key(token)
+    if not key or len(key) < 2:
+        return True
+    if token in STOPWORDS or token in BAN:
+        return True
+    if key in STOPWORDS or key in BAN or key in _WEAK_IDENTITY_WORDS:
+        return True
+    if re.fullmatch(r"\d+", key):
+        return True
+    if any(key.endswith(suffix) for suffix in _WEAK_IDENTITY_SUFFIXES):
+        return True
     return False
 
 
+def _collect_identity_tokens_from_name(product_name: str, max_main: int = 4, max_total: int = 6) -> list[str]:
+    raw_tokens = _split_identity_name_tokens(product_name)
+    if not raw_tokens:
+        return []
+
+    main_scored = []
+    specs = []
+    fallback = []
+    for idx, token in enumerate(raw_tokens):
+        if _is_weak_identity_token(token):
+            continue
+        if _is_strong_identity_token(token):
+            specs.append((idx, token))
+        else:
+            score = 40 - idx
+            if idx < 2:
+                score += 12
+            elif idx < 4:
+                score += 6
+            if re.search(r"[가-힣]", token):
+                score += 4
+            main_scored.append((score, idx, token))
+        fallback.append(token)
+
+    main_scored.sort(key=lambda item: (-item[0], item[1]))
+    ordered = [token for _, _, token in main_scored[:max_main]]
+    for _, token in sorted(specs, key=lambda item: item[0]):
+        if token not in ordered:
+            ordered.append(token)
+        if len(ordered) >= max_total:
+            break
+    if not ordered:
+        ordered = fallback[:max_total]
+    return ordered[:max_total]
 
 
+def _semantic_overlap_count(source_tokens: list[str], reference_tokens: list[str]) -> int:
+    refs = []
+    for ref in reference_tokens:
+        key = _identity_semantic_key(ref)
+        if not key:
+            continue
+        refs.append(key)
 
+    matched = set()
+    for token in source_tokens:
+        key = _identity_semantic_key(token)
+        if not key:
+            continue
+        for ref_key in refs:
+            if ref_key in matched:
+                continue
+            if key == ref_key:
+                matched.add(ref_key)
+                break
+            if len(key) >= 3 and len(ref_key) >= 3 and (key in ref_key or ref_key in key):
+                matched.add(ref_key)
+                break
+    return len(matched)
+
+
+def semantic_overlap_count(source_tokens: list[str], reference_tokens: list[str]) -> int:
+    return _semantic_overlap_count(source_tokens, reference_tokens)
+
+
+def _has_anchor_overlap(keyword: str, anchors: set) -> bool:
+    if not anchors:
+        return True
+    tokens = _split_identity_name_tokens(keyword)
+    if not tokens:
+        tokens = [_normalize_identity_token(keyword)]
+    return _semantic_overlap_count(tokens, list(anchors)) >= 1
+
+
+def build_baseline_tokens_from_name(product_name: str) -> set:
+    """상품명에서 강한 identity token 중심 baseline을 만든다."""
+    baseline = _collect_identity_tokens_from_name(product_name, max_main=4, max_total=6)
+    if baseline:
+        return set(baseline)
+
+    fallback = []
+    for token in _split_identity_name_tokens(product_name):
+        if token in STOPWORDS or token in BAN:
+            continue
+        fallback.append(token)
+        if len(fallback) >= 4:
+            break
+    return set(fallback)
+
+
+def is_consistent_with_baseline(keyword: str, baseline: set) -> bool:
+    """후보 키워드가 baseline identity와 충분히 겹치는지 검사한다."""
+    if not baseline:
+        return True
+
+    baseline_tokens = [b for b in baseline if not _is_weak_identity_token(b)]
+    if not baseline_tokens:
+        return True
+
+    keyword_tokens = _split_identity_name_tokens(keyword)
+    compact_keyword = _normalize_identity_token(keyword)
+    if compact_keyword and compact_keyword not in keyword_tokens:
+        keyword_tokens.append(compact_keyword)
+
+    overlap = _semantic_overlap_count(keyword_tokens, baseline_tokens)
+    if overlap == 0:
+        return False
+
+    strong_overlap = 0
+    for base in baseline_tokens:
+        base_key = _identity_semantic_key(base)
+        if not base_key:
+            continue
+        matched = False
+        for tok in keyword_tokens:
+            tok_key = _identity_semantic_key(tok)
+            if not tok_key:
+                continue
+            if tok_key == base_key:
+                matched = True
+                break
+            if len(base_key) >= 3 and len(tok_key) >= 3 and (base_key in tok_key or tok_key in base_key):
+                matched = True
+                break
+        if matched and (_is_strong_identity_token(base) or len(base_key) >= 3):
+            strong_overlap += 1
+
+    if strong_overlap >= 1:
+        return True
+    return overlap >= min(2, len(baseline_tokens))
 
 
 def is_on_topic(keyword: str, anchors: set, baseline: set) -> bool:
-
-
-
     """금칙 도메인 배제 + 앵커 교집합 + 상품명기반 baseline 일관성"""
-
-
-
     k = _clean_one_kw(keyword)
-
-
-
-    if not k: return False
-
-
-
+    if not k:
+        return False
     if any(ng in k for ng in NEG_DOMAIN):  # 도메인 배제
-
-
-
         return False
-
-
-
-    # 앵커 교집합
-
-
-
-    if anchors:
-
-
-
-        for a in anchors:
-
-
-
-            if a and a in k:
-
-
-
-                break
-
-
-
-        else:
-
-
-
-            return False
-
-
-
-    # 상품명 baseline 일관성
-
-
-
+    if anchors and not _has_anchor_overlap(k, anchors):
+        return False
     if not is_consistent_with_baseline(k, baseline):
-
-
-
         return False
-
-
-
     return True
-
-
-
-
-
-
 
 # ------------------ 검색어설정(R열) - GPT 5 + 네이버 통합 ------------------
 
@@ -1392,464 +1399,226 @@ BAN = {"정품","국내발송","무료배송","행사","특가","세일","인기
 
 
 
-VARIANTS = [("후크택","후크텍"), ("파일홀더","파일폴더"), ("문서홀더","문서폴더"),
+SAFE_ALIASES = [
+    ("가스켓", "가스킷"),
+    ("브라켓", "브래킷"),
+    ("D링", "디링"),
+]
 
 
-
-            ("정원조명","정원무드등"), ("태양광등","태양광조명")]
-
-
-
-
-
-
-
-SYSTEM_FOR_R = """너는 한국 이커머스(네이버/쿠팡) 검색 노출 극대화 전문가다.
-목표: 소비자가 실제 검색하는 다양한 표현을 최대한 커버하는 합성 키워드 생성.
+SYSTEM_FOR_R = """너는 한국 이커머스 검색어 후보 생성기다.
+목표: 상품명과 OCR 요약에서 근거가 있는 합성 키워드만 만든다.
 
 출력: 최대 10개, 콤마(,)로만 구분, 공백 없이 붙여쓰기.
-예: USB충전케이블,고속충전기,타입C케이블,차량용충전기,데이터전송케이블,노트북충전,급속충전
 
 슬롯 구성:
-1. 핵심상품군 합성어 3~4개 (제품유형+기능/스펙 조합)
-2. 동의어/표기변형 합성어 1~2개 (소비자가 실제 검색하는 오타/변형 포함)
-3. 기능/문제해결 합성어 2~3개 (구매 의도 직결)
-4. 사용처/대상 합성어 1~2개 (장소/호환)
-5. 재질/규격 합성어 0~1개 (근거 있을 때만)
+1. 핵심상품군 합성어 3~4개
+2. 실무 유사어/안전한 별칭 0~1개
+3. 기능/문제해결 합성어 1~3개
+4. 사용처/대상 합성어 0~2개
+5. 재질/규격 합성어 0~1개
 
 필수 규칙:
-- 합성어(2~15자), 붙여쓰기, 구매의도 직접 연결.
-- 동의어/표기변형/맞춤법 변형 적극 포함 (소비자 실제 검색 패턴 반영).
-- 무관 브랜드/인기어/경쟁사 상표 금지.
+- evidence-first. 상품명/요약에 근거 없는 사용처/재질/기능 추가 금지.
+- intentional typo, 맞춤법 변형, 혼동 유도형 표기변형 생성 금지.
+- 길이를 채우기 위한 무관 토큰 추가 금지.
+- 같은 뜻 중복 금지. 안전한 별칭은 최대 1개만 허용.
 - 키워드만 반환, 설명 금지.
 
 금지어: """ + ",".join(sorted(BAN))
 
 
-
-
-
-
-
 def _compact_korean(s: str) -> str:
-
-
-
-    s = re.sub(r"[^\uAC00-\uD7A3\sA-Za-z0-9]", " ", s or "")
-
-
-
+    s = re.sub(r"[^가-힣\sA-Za-z0-9]", " ", s or "")
     s = re.sub(r"\s+", " ", s).strip()
-
-
-
     return s
 
 
+def _limit_safe_aliases(parts: list[str], max_aliases: int = 1) -> list[str]:
+    alias_group = {}
+    for idx, group in enumerate(SAFE_ALIASES):
+        for item in group:
+            alias_group[_identity_semantic_key(item)] = idx
 
-
-
+    out = []
+    seen = set()
+    used_groups = set()
+    alias_count = 0
+    for part in parts:
+        token = re.sub(r"\s+", "", str(part or ""))
+        if not token:
+            continue
+        key = _identity_semantic_key(token)
+        if not key or key in seen:
+            continue
+        group_id = alias_group.get(key)
+        if group_id is not None:
+            if group_id in used_groups or alias_count >= max_aliases:
+                continue
+            used_groups.add(group_id)
+            alias_count += 1
+        seen.add(key)
+        out.append(token)
+    return out
 
 
 def _fallback_heuristic(product_name: str, summary: str, max_n=10) -> str:
-
-
-
     txt = _compact_korean(product_name + " " + summary)
-
-
-
+    anchors = build_anchors_from_name(product_name)
+    baseline = build_baseline_tokens_from_name(product_name)
     words = [w for w in txt.split() if w not in BAN and 2 <= len(w) <= 12]
-
-
 
     out, seen = [], set()
 
-
-
     def push(w):
-
-
-
-        if w and w not in seen:
-
-
-
-            seen.add(w); out.append(w)
-
-
+        token = re.sub(r"\s+", "", str(w or ""))
+        if not token or any(b in token for b in BAN):
+            return
+        if not (2 <= len(token) <= 12):
+            return
+        if not is_on_topic(token, anchors, baseline):
+            return
+        key = _identity_semantic_key(token)
+        if not key or key in seen:
+            return
+        seen.add(key)
+        out.append(token)
 
     for w in words:
-
-
-
         push(w)
-
-
-
-        if len(out) >= max_n: break
-
-
+        if len(out) >= max_n:
+            break
 
     if len(out) < max_n:
+        for i in range(len(words) - 1):
+            push(words[i] + words[i + 1])
+            if len(out) >= max_n:
+                break
 
+    if len(out) < max_n:
+        for primary, alias in SAFE_ALIASES:
+            if any(primary in item for item in out) and all(alias not in item for item in out):
+                push(alias)
+                break
+            if any(alias in item for item in out) and all(primary not in item for item in out):
+                push(primary)
+                break
 
-
-        for i in range(len(words)-1):
-
-
-
-            push(words[i] + words[i+1])
-
-
-
-            if len(out) >= max_n: break
-
-
-
-    for a,b in VARIANTS:
-
-
-
-        if len(out) >= max_n: break
-
-
-
-        if any(a in w for w in out) and all(b not in w for w in out):
-
-
-
-            push(b)
-
-
-
-        elif any(b in w for w in out) and all(a not in w for w in out):
-
-
-
-            push(a)
-
-
-
-    return ",".join([re.sub(r"\s+","",w) for w in out][:max_n])
-
-
-
-
-
+    return ",".join(_limit_safe_aliases(out, max_aliases=1)[:max_n])
 
 
 def generate_longtail10(product_name: str, summary: str = "", client=None, model_name="gpt-4.1-mini") -> list:
-
-
-
     """상품명 기반 롱테일 10 생성(GPT 있으면 GPT, 없으면 휴리스틱)"""
-
-
-
     product_name = _compact_korean(product_name)
-
-
-
     summary = _compact_korean(summary)
-
-
-
     resolved_client = _resolve_model_client(model_name, explicit_client=client)
 
-
-
     if not resolved_client or not model_name or model_name == "없음":
-
-
-
         return [x for x in _fallback_heuristic(product_name, summary, max_n=10).split(",") if x]
-
-
 
     user_msg = f"""[입력]
-
-
-
 상품명: "{product_name}"
-
-
-
 요약: "{summary}"
 
-
-
-
-
-
-
 [요청]
-
-
-
-- 붙여쓴 핵심 합성어 7~10개를 콤마(,)로만 구분해 출력.
-
-
-
-- 공백/슬래시/중점/해시태그 금지. 필요 시 혼용 표기 1개 포함."""
-
-
+- 붙여쓴 핵심 합성어 5~10개를 콤마(,)로만 구분해 출력.
+- 실무 유사어/안전한 별칭은 최대 1개만 허용.
+- intentional typo, 맞춤법 변형, 길이 채우기용 무관 확장 금지."""
 
     try:
-
-
-
         resp = resolved_client.chat.completions.create(
-
-
-
             model=model_name,
-
-
-
-            messages=[{"role":"system","content":SYSTEM_FOR_R},
-
-
-
-                      {"role":"user","content":user_msg}],
-
-
-
-            temperature=0.2, top_p=0.9, max_tokens=180
-
-
-
+            messages=[
+                {"role": "system", "content": SYSTEM_FOR_R},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.2,
+            top_p=0.9,
+            max_tokens=180,
         )
-
-
-
         raw = (resp.choices[0].message.content or "").strip().replace(" ", "")
-
-
-
-        raw = re.sub(r"[^,\uAC00-\uD7A3A-Za-z0-9]", "", raw)
-
-
-
+        raw = re.sub(r"[^,가-힣A-Za-z0-9]", "", raw)
         parts = [p for p in raw.split(",") if p]
-
-
-
-        # 부족하면 휴리스틱 보충
-
-
-
-        if len(parts) < 7:
-
-
-
+        if len(parts) < 5:
             parts.extend([x for x in _fallback_heuristic(product_name, summary, max_n=10).split(",") if x])
-
-
-
-        # 상위 10개
-
-
+        parts = _limit_safe_aliases(parts, max_aliases=1)
 
         seen, out = set(), []
-
-
-
         for p in parts:
-
-
-
-            if p not in seen:
-
-
-
-                seen.add(p); out.append(p)
-
-
-
-            if len(out) >= 10: break
-
-
-
+            key = _identity_semantic_key(p)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(p)
+            if len(out) >= 10:
+                break
         return out
-
-
-
     except Exception:
-
-
-
         return [x for x in _fallback_heuristic(product_name, summary, max_n=10).split(",") if x]
-
-
-
-
-
 
 
 def generate_r_keywords_gpt5(product_name: str, summary: str, client=None, model_name="gpt-4.1") -> str:
-
-
-
     product_name = _compact_korean(product_name)
-
-
-
     summary = _compact_korean(summary)
-
-
-
     resolved_client = _resolve_model_client(model_name, explicit_client=client)
 
-
-
     if not resolved_client or not model_name or model_name == "없음":
-
-
-
         return _fallback_heuristic(product_name, summary, max_n=10)
-
-
 
     user_msg = f"""[입력]
-
-
-
 상품명: "{product_name}"
-
-
-
 요약: "{summary}"
 
-
-
-
-
-
-
 [요청]
-
-
-
-- 붙여쓴 핵심 합성어 7~10개를 콤마(,)로만 구분해 출력.
-
-
-
-- 공백/슬래시/중점/해시태그 금지. 필요 시 혼용 표기 1개 포함."""
-
-
+- 붙여쓴 핵심 합성어 5~10개를 콤마(,)로만 구분해 출력.
+- 안전한 실무 별칭은 최대 1개만 허용.
+- intentional typo, 맞춤법 변형, 무관 확장 금지."""
 
     try:
-
-
-
         resp = resolved_client.chat.completions.create(
-
-
-
             model=model_name,
-
-
-
-            messages=[{"role":"system","content":SYSTEM_FOR_R},
-
-
-
-                      {"role":"user","content":user_msg}],
-
-
-
-            temperature=0.2, top_p=0.9, max_tokens=180
-
-
-
+            messages=[
+                {"role": "system", "content": SYSTEM_FOR_R},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.2,
+            top_p=0.9,
+            max_tokens=180,
         )
-
-
-
         raw = (resp.choices[0].message.content or "").strip()
-
-
-
     except Exception:
-
-
-
         return _fallback_heuristic(product_name, summary, max_n=10)
 
-
-
     raw = raw.replace(" ", "")
-
-
-
-    raw = re.sub(r"[^,\uAC00-\uD7A3A-Za-z0-9]", "", raw)
-
-
-
+    raw = re.sub(r"[^,가-힣A-Za-z0-9]", "", raw)
     parts = [p for p in raw.split(",") if p]
 
-
-
     clean, seen = [], set()
+    for p in _limit_safe_aliases(parts, max_aliases=1):
+        if any(b in p for b in BAN):
+            continue
+        if not (2 <= len(p) <= 12):
+            continue
+        key = _identity_semantic_key(p)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        clean.append(p)
+        if len(clean) >= 10:
+            break
 
-
-
-    for p in parts:
-
-
-
-        if any(b in p for b in BAN): continue
-
-
-
-        if p in seen: continue
-
-
-
-        if not (2 <= len(p) <= 12): continue
-
-
-
-        seen.add(p); clean.append(p)
-
-
-
-        if len(clean) >= 10: break
-
-
-
-    if len(clean) < 10:
-
-
-
-        for a, b in VARIANTS:
-
-
-
-            if any(a in k for k in clean) and all(b not in k for k in clean):
-
-
-
-                clean.append(b); break
-
-
-
-            if any(b in k for k in clean) and all(a not in k for k in clean):
-
-
-
-                clean.append(a); break
-
-
+    if len(clean) < 5:
+        fallback = [x for x in _fallback_heuristic(product_name, summary, max_n=10).split(",") if x]
+        for item in fallback:
+            key = _identity_semantic_key(item)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            clean.append(item)
+            if len(clean) >= 10:
+                break
 
     return ",".join(clean[:10])
-
-
-
-
-
-
 
 # ------------------ (통합) 네이버 검색광고 API: 상위 키워드 + CTR ------------------
 
@@ -2793,840 +2562,441 @@ def _apply_keyword_feedback_rules(tokens: list) -> list:
 
 
 
+def _finalize_keyword_candidate(tokens: list[str], max_words: int, max_len: int) -> tuple[str, list[str]]:
+    seed_text = " ".join([normalize_space(str(token or "")).strip() for token in tokens if str(token or "").strip()])
+    _, normalized = postprocess_keywords_tokens(seed_text, max_words=max_words, max_len=max_len)
+    normalized = _apply_keyword_feedback_rules(normalized)
+    if len(normalized) > max_words:
+        normalized = normalized[:max_words]
+    out = normalize_space(" ".join(normalized))[:max_len].strip()
+    return out, normalized
+
+
+def _extract_definition_context(definition: dict) -> tuple[str, list[str]]:
+    field_specs = [
+        ("official_name", "대표명", 1),
+        ("category", "카테고리", 1),
+        ("materials", "재질", 3),
+        ("core_features", "핵심기능", 4),
+        ("core_specs", "핵심규격", 3),
+        ("use_cases", "용도", 3),
+        ("use_context", "사용문맥", 3),
+        ("aliases", "안전별칭", 1),
+    ]
+    lines = []
+    flattened = []
+    for field, label, limit in field_specs:
+        value = definition.get(field)
+        items = []
+        if isinstance(value, list):
+            items = [normalize_space(str(x)) for x in value if normalize_space(str(x))]
+        elif isinstance(value, str) and normalize_space(value):
+            items = [normalize_space(value)]
+        if not items:
+            continue
+        deduped = []
+        seen = set()
+        for item in items:
+            key = _identity_semantic_key(item)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+        if not deduped:
+            continue
+        deduped = deduped[:limit]
+        lines.append(f"- {label}: {', '.join(deduped)}")
+        flattened.extend(deduped)
+    return "\n".join(lines), flattened
+
+
+def keyword_local_score(keyword: str, base_name: str = "", anchors=None, baseline=None) -> int:
+    text = normalize_space(str(keyword or "")).strip()
+    if not text:
+        return -999
+
+    tokens = [t for t in tokenize_korean_words(text) if len(_identity_semantic_key(t)) >= 2]
+    if not tokens:
+        return -999
+
+    anchor_set = set(anchors or build_anchors_from_name(base_name))
+    baseline_set = set(baseline or build_baseline_tokens_from_name(base_name))
+    base_tokens = _split_identity_name_tokens(base_name)
+    reference_tokens = list(anchor_set | baseline_set | set(base_tokens))
+
+    score = 12 if is_on_topic(text, anchor_set, baseline_set) else -20
+    score += min(len(tokens), 8)
+    score += _semantic_overlap_count(tokens, list(anchor_set)) * 4
+    score += _semantic_overlap_count(tokens, list(baseline_set)) * 5
+    score += _semantic_overlap_count(tokens, base_tokens) * 3
+
+    seen = set()
+    dup_penalty = 0
+    generic_penalty = 0
+    off_topic_penalty = 0
+    for token in tokens:
+        key = _identity_semantic_key(token)
+        if not key:
+            continue
+        if key in seen:
+            dup_penalty += 1
+        seen.add(key)
+        if key in _WEAK_IDENTITY_WORDS:
+            generic_penalty += 1
+        elif reference_tokens and _semantic_overlap_count([token], reference_tokens) == 0 and not _is_strong_identity_token(token):
+            off_topic_penalty += 1
+
+    score -= dup_penalty * 4
+    score -= generic_penalty * 2
+    score -= off_topic_penalty * 3
+    return score
+
+
 def generate_keyword_gpt(product_name: str,
-
                          detail_summary: str,
-
                          model_name: str,
-
                          max_words: int,
-
                          max_len: int,
-
                          min_len: int,
-
                          vision_analysis: dict = None):
-
-
-
     global LAST_GPT_ERROR
-
     LAST_GPT_ERROR = ""
 
-
-
     _min_words_needed = int(min_len / 3.5) + 1 if min_len > 0 else max_words
-
     if max_words < _min_words_needed:
-
         max_words = min(_min_words_needed, 50)
+    target_words = max(6, min(max_words, 24))
 
-    target_words = max(8, min(max_words, 28))
-
-
-
+    cleaned_name = re.sub(r"GS\d{7}[A-Z0-9]*\s*", "", str(product_name)).strip()
+    ocr_text = normalize_space(str(detail_summary or ""))
+    base_name_for_score = cleaned_name or normalize_space(str(product_name or ""))
+    base_anchors = build_anchors_from_name(base_name_for_score)
+    base_baseline = build_baseline_tokens_from_name(base_name_for_score)
     resolved_client = _resolve_model_client(model_name)
 
+    def finalize_text(text: str) -> tuple[str, list[str]]:
+        _, tokens = postprocess_keywords_tokens(text, max_words=target_words, max_len=max_len)
+        return _finalize_keyword_candidate(tokens, max_words=target_words, max_len=max_len)
 
+    def rank(candidate: tuple[str, list[str]]) -> tuple[int, int, int, int]:
+        out, tokens = candidate
+        if not out:
+            return (-999, -999, -999, -999)
+        score = keyword_local_score(out, base_name=base_name_for_score, anchors=base_anchors, baseline=base_baseline)
+        overlap = _semantic_overlap_count(tokens, list(base_baseline or base_anchors))
+        unique = len({_identity_semantic_key(tok) for tok in tokens if _identity_semantic_key(tok)})
+        generic = sum(1 for tok in tokens if _identity_semantic_key(tok) in _WEAK_IDENTITY_WORDS)
+        return (score, overlap, unique - generic, -generic)
+
+    def choose_better(current: tuple[str, list[str]], candidate: tuple[str, list[str]]) -> tuple[str, list[str]]:
+        return candidate if rank(candidate) > rank(current) else current
 
     if not resolved_client or model_name == "없음":
-
-        base = f"{product_name} {detail_summary}".strip()
-
-        out, tokens = postprocess_keywords_tokens(base, max_words=max_words, max_len=max_len)
-
-        tokens = _apply_keyword_feedback_rules(tokens)
-
-        tokens = _apply_keyword_feedback_rules(tokens)
-
-        out = normalize_space(" ".join(tokens))[:max_len].strip()
-
-        return out, tokens
-
-
+        return finalize_text(f"{cleaned_name} {detail_summary}".strip())
 
     try:
-
-        cleaned_name = re.sub(r"GS\d{7}[A-Z0-9]*\s*", "", str(product_name)).strip()
-
-        ocr_text = normalize_space(str(detail_summary or ""))
-
-
-
-        # Vision 분석 결과를 텍스트 블록으로 변환
-
         vision_context = ""
-
         if vision_analysis:
-
-            _lines = []
-
+            lines = []
             for section, fields in vision_analysis.items():
-
                 if isinstance(fields, dict):
-
-                    for k, v in fields.items():
-
-                        if isinstance(v, list):
-
-                            vals = [str(x) for x in v if str(x).strip()]
-
+                    for key, value in fields.items():
+                        if isinstance(value, list):
+                            vals = [str(x) for x in value if str(x).strip()]
                             if vals:
-
-                                _joined = ", ".join(vals)
-                                _lines.append(f"- {section}.{k}: {_joined}")
-
-                        elif isinstance(v, str) and v.strip():
-
-                            _lines.append(f"- {section}.{k}: {v}")
-
-            if _lines:
-
-                vision_context = "\n[이미지 분석 결과]\n" + "\n".join(_lines)
-
-
+                                lines.append(f"- {section}.{key}: {', '.join(vals)}")
+                        elif isinstance(value, str) and value.strip():
+                            lines.append(f"- {section}.{key}: {value}")
+            if lines:
+                vision_context = "\n[이미지 분석 결과]\n" + "\n".join(lines)
 
         define_system = (
-
-            "너는 한국 이커머스(네이버/쿠팡) 상품 분석 전문가다. "
-
+            "너는 한국 이커머스 상품 분석 전문가다. "
             "상품명과 OCR 텍스트에서 상품 정체성을 높은 정밀도로 추론하라. "
-
-            + ("이미지 분석 결과가 보조 근거로 제공된다. 이미지 근거가 OCR/상품명과 일치하면 적극 활용하라. " if vision_context else "")
-
+            + ("이미지 분석 결과가 보조 근거로 제공된다. 이미지 근거가 OCR/상품명과 일치할 때만 반영하라. " if vision_context else "")
             + "노이즈 보일러플레이트는 무시: 배송/반품/프로모션/정책/원산지/수입원/연락처/공지/쿠폰/이벤트/수동측정오차/모니터색상차이. "
-
-            "반드시 JSON만 반환. "
-
-            "추상적 단어(소유자/사용자/품질)보다 실제 이커머스 검색에 쓰이는 실용적 용어를 선호. "
-
-            "근거 없는 스펙/인증/호환성 포함 금지. "
-
-            "상품과 무관한 유명 브랜드/인기어/경쟁사 상표 절대 금지. "
-
-            "근거 없는 최상급(최고/1위/완벽/100%), 과장 효능, 오해 소지 표현 금지."
-
+            "반드시 JSON만 반환. 근거 없는 스펙/인증/호환성/새 카테고리 생성 금지. 오타/맞춤법 변형을 alias로 만들지 말라."
         )
-
-        define_user = (
-
-            "아래 JSON 스키마를 정확히 채워 반환하라:\n"
-
-            "{"
-
-            "\"official_name\": string, "
-
-            "\"category\": string, "
-
-            "\"brand\": string, "
-
-            "\"materials\": string array, "
-
-            "\"core_features\": string array, "
-
-            "\"core_specs\": string array, "
-
-            "\"use_cases\": string array, "
-
-            "\"use_context\": string array, "
-
-            "\"target_users\": string array, "
-
-            "\"spec_terms\": string array, "
-
-            "\"aliases\": string array, "
-
-            "\"field_terms\": string array, "
-
-            "\"compatibility\": string array, "
-
-            "\"excluded_noise\": string array"
-
-            "}\n"
-
-            "Rules:\n"
-
-            "- official_name: 정확한 제품 대표명(브랜드+제품유형+핵심스펙).\n"
-
-            "- category: 상세 카테고리 경로(대분류>중분류>소분류).\n"
-
-            "- brand: 브랜드명. 없으면 빈 문자열.\n"
-
-            "- materials: 근거 있는 재질만(스테인리스, 실리콘, 나일론 등).\n"
-
-            "- core_features: 기능/성능(방수, 저자극, 고속충전, 각도조절 등).\n"
-
-            "- core_specs: 수치 기반 스펙(500ml, 2m, IPX6, 20W 등). 근거 있는 값만.\n"
-
-            "- use_cases: 사용 목적/문제해결(고정, 보호, 방지, 연결, 정리 등).\n"
-
-            "- use_context: 사용 장소/상황(캠핑, 욕실, 차량, 사무실, 벽면 등).\n"
-
-            "- target_users: 대상. 근거 있을 때만.\n"
-
-            "- aliases: 동의어/표기변형/맞춤법변형. 소비자가 실제 검색하는 모든 표현 (오타 포함, 5개 이상 OK).\n"
-
-            "- field_terms: 실제 판매/검색에 쓰이는 실무 용어.\n"
-
-            "- compatibility: 호환 대상(USB-C, PD 등). 근거 있을 때만.\n"
-
-            "- excluded_noise: OCR에서 발견된 노이즈 용어만.\n"
-
-            f"ProductName: {cleaned_name}\n"
-
-            f"OCRSummary: {ocr_text[:2500]}"
-
-            + (f"\n{vision_context}" if vision_context else "")
-
-        )
-
-
+        define_vision_suffix = "\n" + vision_context if vision_context else ""
+        define_user = f"""아래 JSON 스키마를 정확히 채워 반환하라:
+{{
+  "official_name": string,
+  "category": string,
+  "brand": string,
+  "materials": string array,
+  "core_features": string array,
+  "core_specs": string array,
+  "use_cases": string array,
+  "use_context": string array,
+  "target_users": string array,
+  "spec_terms": string array,
+  "aliases": string array,
+  "field_terms": string array,
+  "compatibility": string array,
+  "excluded_noise": string array
+}}
+Rules:
+- official_name: 정확한 제품 대표명.
+- category: 상세 카테고리 경로.
+- materials/core_features/core_specs/use_cases/use_context: 근거 있는 값만.
+- aliases: 안전한 실무 유사어만, 최대 2개. intentional typo/맞춤법 변형 금지.
+ProductName: {cleaned_name}
+OCRSummary: {ocr_text[:2500]}{define_vision_suffix}"""
 
         define_resp = resolved_client.chat.completions.create(
-
             model=model_name,
-
             messages=[
-
                 {"role": "system", "content": define_system},
-
                 {"role": "user", "content": define_user},
-
             ],
-
             temperature=0.1,
-
             top_p=0.9,
-
             max_tokens=900,
-
             response_format={"type": "json_object"},
-
         )
-
         definition_raw = (define_resp.choices[0].message.content or "").strip()
-
         try:
-
             definition = json.loads(definition_raw) if definition_raw else {}
-
         except Exception:
-
             definition = {}
 
-        keyword_system = """너는 한국 이커머스(네이버/쿠팡) 상품 키워드 전문가다.
+        definition_context, definition_terms = _extract_definition_context(definition)
 
-다음 순서를 반드시 지켜라:
-[상품명] → [핵심속성/형태] → [특징] → [목적] → [설치장소/사용처]
+        keyword_system = f"""너는 한국 이커머스 상품 키워드 조립기다.
+목표는 더 길게 쓰는 것이 아니라, 근거 있는 정보축만 남긴 한 줄 키워드를 만드는 것이다.
 
-## 핵심 원칙
-1. 핵심 명사 중복 제거: 합성어 포함, 같은 핵심 명사(끝 명사)는 1회만 사용.
-   X: 유리문롤러 레일롤러 슬라이딩롤러 → O: 유리문 롤러 레일 슬라이딩
-2. 검색 축 유지: 서로 다른 의미(검색 의도)의 키워드는 유지.
-   대상(유리문,창문) + 상품(롤러,잠금장치) + 방식(슬라이딩,미닫이) + 연관(레일,방충망)
-3. 동의어 제한: 같은 의미 키워드는 검색량 높은 1개만 선택.
-   슬라이딩 vs 미닫이 → 1개만 / 유리 vs 글라스 → 1개만
-4. 합성어: 분리형 우선. 필요시 1개만 허용.
-   유리문 롤러(권장) / 유리문롤러(보조 1개 가능)
+핵심 원칙:
+- evidence-first: 상품명 > 구조화 정의 > OCR/Vision 순서로 사용한다.
+- 근거 없는 사용처/재질/기능/대상 추가 금지.
+- 검색 커버리지 목적의 오타/맞춤법변형/무관 동의어 생성 금지.
+- 길이가 부족해도 무관 확장 금지. 근거가 부족하면 짧아도 된다.
+- 같은 뜻 중복 금지.
 
-## 키워드 구조 순서
-[대상/카테고리] + [핵심상품] + [사용방식/연관] + [사용처] + [특징/재질]
+출력 규칙:
+- 한 줄, 공백 구분, 키워드만 출력.
+- 목표 길이는 {min_len}~{max_len}자이지만 강제하지 않는다.
+- 최대 {target_words}토큰까지만 사용한다.
+- 순서는 정체성 -> 구조/규격 -> 핵심 기능 -> 사용처(근거 있을 때만) -> 재질/옵션."""
 
-## 출력 규칙
-- 한 줄, 공백 구분, 90~140자.
-- 키워드만 출력. 설명/번호/마크다운 금지.
-
-## 기능 키워드 제한
-- 기능/특징은 최대 3~4개만.
-- 금지: 검증 없는 방범/완벽/추락방지, 판매조건, 브랜드, 과장.
-- 허용: 저소음, 간편설치, 교체용 등.
-
-## 이미지 분석 활용
-- 이미지 분석 결과가 있으면 적극 활용.
-- product_type_correction이 있으면 제품 유형 판단에 우선 반영.
-
-## 예시 (90~140자 범위 준수)
-
-상품명: 유리레일롤러
-유리문 롤러 레일 슬라이딩 호차 쇼케이스 진열장 장식장 유리파티션 욕실 유리도어 이탈방지 교체용 저소음 간편설치 스테인리스 황동 고무패드 5mm 8mm 실버
-
-상품명: 창문잠금후크
-창문 잠금 후크 래치 미닫이 샷시 방충망 베란다창 거실창 침입방지 열림방지 어린이안전 간편설치 나사고정 환기 PP 스틸 블랙 아이보리
-
-상품명: PVC클램프
-PVC 클램프 파이프 배관 클립 U형 새들 브라켓 벽면 천장 배관실 공장 욕실 주방 건축현장 고정 정리 흔들림방지 수도관 전선관 호스 케이블 나사 경량 14mm 16mm 화이트"""
-
+        definition_block = "\n[구조화된 정의]\n" + definition_context if definition_context else ""
         keyword_user = f"""상품명: {cleaned_name}
 
 OCR요약: {ocr_text[:1800]}
-
+{definition_block}
 {vision_context if vision_context else ''}
 
-제약: 최소 {min_len}자, 최대 {max_len}자, 20~28토큰
+작성 지시:
+- official_name, category, materials, core_features, core_specs, use_cases, use_context, aliases 중 비어 있지 않은 값만 반영한다.
+- aliases는 안전한 실무 유사어 0~1개만 허용한다.
+- use_cases/use_context는 상품명/OCR와 교집합이 있을 때만 사용한다.
+- 새 카테고리, 새 상품군, 새 사용처를 창작하지 말라.
+- 짧더라도 정체성을 우선한다.
 
 한 줄 키워드만 출력"""
 
-
-
         resp = resolved_client.chat.completions.create(
-
             model=model_name,
-
             messages=[
-
                 {"role": "system", "content": keyword_system},
-
                 {"role": "user", "content": keyword_user},
-
             ],
-
             temperature=0.1,
-
             top_p=0.8,
-
             max_tokens=520,
-
         )
+        best = finalize_text((resp.choices[0].message.content or "").strip())
+        if definition_terms:
+            best = choose_better(best, finalize_text(f"{cleaned_name} {' '.join(definition_terms)}".strip()))
 
-        raw = (resp.choices[0].message.content or "").strip()
+        for attempt in range(2):
+            if rank(best)[0] >= 16 and len(best[1]) >= 5:
+                break
+            retry_msg = f"""현재 결과: {best[0] or '(없음)'}
 
-        out, tokens = postprocess_keywords_tokens(raw, max_words=target_words, max_len=max_len)
+다시 작성하라.
+- 더 길게가 아니라 더 on-topic이고 더 정보축이 좋게 만든다.
+- generic token, 중복 token, 무관 token을 제거한다.
+- OCR에서 추가할 수 있는 토큰은 base identity와 겹치는 것만 허용한다.
+- 근거가 부족하면 짧게 끝낸다.
+- intentional typo/맞춤법변형/무관 사용처 추가 금지.
 
-        tokens = _apply_keyword_feedback_rules(tokens)
-
-        out = normalize_space(" ".join(tokens))[:max_len].strip()
-
-        tokens = _apply_keyword_feedback_rules(tokens)
-
-        out = normalize_space(" ".join(tokens))[:max_len].strip()
-
-
-
-        tries = 0
-
-        while (len(out) < min_len or len(out.split()) < min(6, target_words)) and tries < 3:
-
-            tries += 1
-
-            retry_msg = (
-
-                f"현재 결과가 기준 미달입니다 ({len(out)}자, {len(out.split())}단어). "
-
-                f"최소 {min_len}자, 최소 {min(8, target_words)}단어를 맞춰 다시 생성하세요. "
-
-                "한 줄 키워드만 출력하고, 검색 커버리지를 넓히되, 상품과 무관한 키워드는 제거하세요. "
-
-                "DIY/무타공/회전/각도조절 같은 단어는 OCR/상품명 근거가 있을 때만 포함하세요. "
-
-                "권장 순서는 핵심제품명 기능 구조 장착부위 사용처 재질 옵션입니다."
-
-            )
-
-
-
+한 줄 키워드만 출력"""
             retry = resolved_client.chat.completions.create(
-
                 model=model_name,
-
                 messages=[
-
                     {"role": "system", "content": keyword_system},
-
                     {"role": "user", "content": retry_msg},
-
                     {"role": "user", "content": keyword_user},
-
                 ],
-
-                temperature=0.12 + tries * 0.05,
-
+                temperature=0.12 + attempt * 0.04,
                 max_tokens=520,
-
             )
+            best = choose_better(best, finalize_text((retry.choices[0].message.content or "").strip()))
 
-
-
-            retry_out, retry_tokens = postprocess_keywords_tokens(
-
-                (retry.choices[0].message.content or "").strip(),
-
-                max_words=target_words,
-
-                max_len=max_len,
-
-            )
-
-            if len(retry_out) > len(out):
-
-                out, tokens = retry_out, retry_tokens
-
-                tokens = _apply_keyword_feedback_rules(tokens)
-
-                out = normalize_space(" ".join(tokens))[:max_len].strip()
-
-                tokens = _apply_keyword_feedback_rules(tokens)
-
-                out = normalize_space(" ".join(tokens))[:max_len].strip()
-
-
-
-        if len(out) < min_len and detail_summary:
-
-            _, ocr_tokens = postprocess_keywords_tokens(
-
-                detail_summary, max_words=target_words, max_len=max_len
-
-            )
-
-            existing = set(tokens)
-
-            for t in ocr_tokens:
-
-                if t not in existing and len(t) >= 2:
-
-                    existing.add(t)
-
-                    tokens.append(t)
-
-                if len(" ".join(tokens)) >= min_len:
-
+        if ocr_text:
+            _, ocr_tokens = postprocess_keywords_tokens(ocr_text, max_words=max(target_words + 6, 20), max_len=max(max_len * 2, 220))
+            augmented = list(best[1])
+            existing = {_identity_semantic_key(tok) for tok in augmented}
+            for token in ocr_tokens:
+                key = _identity_semantic_key(token)
+                if not key or key in existing:
+                    continue
+                if not is_on_topic(token, base_anchors, base_baseline):
+                    continue
+                if _semantic_overlap_count([token], list(base_baseline or base_anchors)) == 0 and not _is_strong_identity_token(token):
+                    continue
+                augmented.append(token)
+                existing.add(key)
+                if len(augmented) >= target_words:
                     break
+            best = choose_better(best, _finalize_keyword_candidate(augmented, max_words=target_words, max_len=max_len))
 
-            tokens = _apply_keyword_feedback_rules(tokens)
-
-            out = normalize_space(" ".join(tokens))[:max_len].strip()
-
-            tokens = _apply_keyword_feedback_rules(tokens)
-
-            out = normalize_space(" ".join(tokens))[:max_len].strip()
-
-
-
-        if not out:
-
-            out, tokens = postprocess_keywords_tokens(
-
-                f"{cleaned_name} {detail_summary}",
-
-                max_words=target_words,
-
-                max_len=max_len,
-
-            )
-
-            tokens = _apply_keyword_feedback_rules(tokens)
-
-            out = normalize_space(" ".join(tokens))[:max_len].strip()
-
-            tokens = _apply_keyword_feedback_rules(tokens)
-
-            out = normalize_space(" ".join(tokens))[:max_len].strip()
-
-
-
-        return out, tokens
-
-
-
+        if not best[0]:
+            best = finalize_text(f"{cleaned_name} {detail_summary}".strip())
+        return best
     except Exception as e:
-
         LAST_GPT_ERROR = f"{type(e).__name__}: {e}"
+        return finalize_text(f"{product_name} {detail_summary}".strip())
 
-        out, tokens = postprocess_keywords_tokens(
-
-            f"{product_name} {detail_summary}",
-
-            max_words=target_words,
-
-            max_len=max_len,
-
-        )
-
-        tokens = _apply_keyword_feedback_rules(tokens)
-
-        out = normalize_space(" ".join(tokens))[:max_len].strip()
-
-        return out, tokens
+def _dedupe_semantic_keyword_tokens(tokens: list[str]) -> list[str]:
+    out = []
+    seen = set()
+    for token in tokens:
+        key = _identity_semantic_key(token)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(token)
+    return out
 
 
+def _collect_stage2_reference_tokens(seed_tokens: list[str], naver_keyword_table: str, ocr_text: str) -> list[str]:
+    anchors = build_anchors_from_name(" ".join(seed_tokens))
+    baseline = build_baseline_tokens_from_name(" ".join(seed_tokens))
+    refs = list(seed_tokens)
 
-# === 寃???ㅼ썙???앹꽦 (OCR ?띿뒪????寃???좎엯???ㅼ썙?? ===
+    for keyword, _ in _extract_naver_candidates_from_table(naver_keyword_table)[:12]:
+        if not is_on_topic(keyword, anchors, baseline):
+            continue
+        for token in tokenize_korean_words(keyword):
+            if _semantic_overlap_count([token], seed_tokens) >= 1 or _is_strong_identity_token(token):
+                refs.append(token)
+
+    for token in tokenize_korean_words(ocr_text):
+        if not is_on_topic(token, anchors, baseline):
+            continue
+        if _semantic_overlap_count([token], seed_tokens) >= 1:
+            refs.append(token)
+
+    return _dedupe_semantic_keyword_tokens(refs)
 
 
-
+def _filter_stage2_tokens(tokens: list[str], reference_tokens: list[str], anchors: set, baseline: set) -> list[str]:
+    out = []
+    seen = set()
+    for token in tokens:
+        key = _identity_semantic_key(token)
+        if not key or key in seen:
+            continue
+        if _semantic_overlap_count([token], reference_tokens) >= 1:
+            out.append(token)
+            seen.add(key)
+            continue
+        if is_on_topic(token, anchors, baseline) and (_is_strong_identity_token(token) or _semantic_overlap_count([token], list(anchors)) >= 1):
+            out.append(token)
+            seen.add(key)
+    return out
 
 
 def generate_keyword_stage2(
-
     seed_keywords: str,
-
     naver_keyword_table: str,
-
     ocr_text: str = "",
-
     model_name: str = "gpt-4.1",
-
     min_len: int = 50,
-
     max_len: int = 100,
-
     max_words: int = 24,
-
 ):
-
-    """
-
-    2차 키워드 생성:
-
-    1차 키워드 + 네이버 검색광고 데이터(검색량)를 기반으로 최종 1줄 키워드 생성.
-
-    """
-
+    """2차 키워드는 생성이 아니라 재정렬/정제/우선순위 조정에만 사용한다."""
     global LAST_GPT_ERROR
-
     LAST_GPT_ERROR = ""
 
-
-
     seed_keywords = normalize_space(str(seed_keywords or "")).strip()
-
     naver_keyword_table = normalize_space(str(naver_keyword_table or "")).strip()
-
     ocr_text = normalize_space(str(ocr_text or "")).strip()
-
-    target_words = max(8, min(max_words, 28))
-
+    target_words = max(6, min(max_words, 24))
     resolved_client = _resolve_model_client(model_name)
 
-
-
     if not seed_keywords:
-
         return "", []
 
+    _, seed_tokens_raw = postprocess_keywords_tokens(seed_keywords, max_words=target_words, max_len=max_len)
+    seed_out, seed_tokens = _finalize_keyword_candidate(seed_tokens_raw, max_words=target_words, max_len=max_len)
+    if not seed_out:
+        return "", []
 
+    anchors = build_anchors_from_name(seed_keywords)
+    baseline = build_baseline_tokens_from_name(seed_keywords)
+    reference_tokens = _collect_stage2_reference_tokens(seed_tokens, naver_keyword_table, ocr_text)
+    seed_score = keyword_local_score(seed_out, base_name=seed_keywords, anchors=anchors, baseline=baseline)
 
-    if not resolved_client or model_name == "없음":
+    if not resolved_client or model_name == "없음" or not naver_keyword_table:
+        return seed_out, seed_tokens
 
-        out, tokens = postprocess_keywords_tokens(
+    system_msg = """너는 한국 이커머스 상품명 정제기다.
+역할은 새로 확장하는 것이 아니라, seed_keywords를 재정렬하고 불필요한 토큰을 제거하는 것이다.
 
-            seed_keywords, max_words=target_words, max_len=max_len
+절대 규칙:
+- seed_keywords 안의 정체성을 유지한다.
+- 새로운 상품군, 새로운 사용처, 새로운 문맥을 창작하지 않는다.
+- intentional typo, 맞춤법 변형, 공격적 동의어 확장 금지.
+- 카테고리 일반어(용품/도구/부품), 마케팅 수식어(간편/다용도/강력/휴대용/접이식) 추가 금지.
+- 더 짧아져도 괜찮다. 더 깨끗하고 더 on-topic인 결과를 우선한다.
+- 한 줄 키워드만 출력한다."""
 
-        )
+    user_msg = f"""seed_keywords:
+{seed_out}
 
-        tokens = _apply_keyword_feedback_rules(tokens)
-
-        if len(tokens) < 10:
-
-            _, extra_tokens = postprocess_keywords_tokens(f"{seed_keywords} {ocr_text}", max_words=40, max_len=220)
-
-            extra_tokens = _apply_keyword_feedback_rules(extra_tokens)
-
-            existing = set(tokens)
-
-            slot_hint = ["브라켓","마운트","경첩","힌지","지지대","개스킷","커넥터","세트","링","걸이","트레일러","스테인리스","아연합금","니켈","스틸","ABS","304","정원","화분","벽면","콘센트"]
-
-            for t in extra_tokens:
-
-                if len(tokens) >= target_words:
-
-                    break
-
-                if t in existing or len(t) < 2:
-
-                    continue
-
-                if not any(h in t for h in slot_hint):
-
-                    continue
-
-                tokens.append(t)
-
-                existing.add(t)
-
-        if any("풀링" in t for t in tokens):
-
-            existing = set(tokens)
-
-            for t in ["304", "다용도"]:
-
-                if t not in existing and len(tokens) < target_words:
-
-                    tokens.append(t)
-
-                    existing.add(t)
-
-        tokens = _apply_keyword_feedback_rules(tokens)
-
-        out = normalize_space(" ".join(tokens[:target_words]))[:max_len].strip()
-
-        return out, tokens[:target_words]
-
-    system_msg = """너는 한국 이커머스(네이버/쿠팡) 상품명 보정 전문가다.
-목표: 검색 노출 극대화. 1차 키워드를 네이버 데이터와 대조해 검색 커버리지를 넓힌다.
-
-보정 절차:
-1. 첫 2~4토큰의 핵심상품군은 유지하거나 더 정확하게만 보정.
-2. 동의어/표기변형/맞춤법 변형을 추가해 검색 커버리지 확대.
-3. 네이버 검색량 높은 키워드를 우선 반영.
-4. 기능/문제해결 키워드 3~5개 유지.
-5. 사용처/대상 폭넓게 3~6개 유지.
-6. 재질/규격 0~3개.
-7. 카테고리 토큰(용품/도구/부품 등) 포함.
-8. 옵션이 있으면 맨 끝에.
-
-강제 규칙:
-- 한 줄만 출력, 공백 구분, 20~30개 단어, 100자 내외
-- 핵심 제품명 첫 단어
-- 동의어/표기변형/오타 변형 적극 포함 (검색 커버리지 목적)
-- 소비자 검색 의도 수식어 허용: 간편, 다용도, 강력, 휴대용, 접이식 등
-- 무관 브랜드/인기어/경쟁사 상표 금지
-- 근거 없는 최상급/과장 효능 금지
-- 판매조건 금지: 무료배송, 당일발송, 특가, 세일, 할인
-- 네이버 데이터는 우선순위 참고용. 카테고리 자체를 바꾸지 말 것
-- 새로운 상품군 창작 금지
-- 1차 키워드가 이미 충분하면 동의어/사용처만 보강
-
-정렬 순서:
-핵심상품군 동의어 기능 사용처 재질 카테고리토큰 옵션"""
-
-
-
-    user_msg = f"""1차 키워드:
-
-{seed_keywords}
-
-
-
-OCR 요약:
-
-{ocr_text[:1200]}
-
-
+참고 reference_tokens:
+{', '.join(reference_tokens[:20])}
 
 네이버 검색광고 데이터:
+{naver_keyword_table[:1200]}
 
-{naver_keyword_table}
+작업:
+- seed_keywords를 재정렬/축약/정제한다.
+- 네이버 데이터는 같은 카테고리의 우선순위 참고용으로만 사용한다.
+- 새 카테고리, 새 상품군, 새 사용처를 만들지 않는다.
+- 결과가 seed보다 더 약하거나 더 멀어지면 seed를 유지한다.
 
-
-
-보정 지시:
-
-- 첫 2~4토큰의 핵심상품군을 먼저 확인
-
-- 동의어/표기변형/오타 변형은 적극 추가 (검색 커버리지 확대)
-
-- 사용처/대상 2~4개 유지
-
-- 기능/문제해결 2~4개 유지
-
-- 재질/규격 0~2개 유지
-
-- 옵션이 보이면 맨 끝 유지
-
-- 판매조건어(무료배송/특가/세일) 삭제, 검색의도 수식어(간편/다용도/강력)는 유지
-
-
-
-한 줄만 출력"""
-
-
+한 줄 키워드만 출력"""
 
     try:
-
         resp = resolved_client.chat.completions.create(
-
             model=model_name,
-
             messages=[
-
                 {"role": "system", "content": system_msg},
-
                 {"role": "user", "content": user_msg},
-
             ],
-
             temperature=0.1,
-
-            max_tokens=350,
-
+            max_tokens=320,
         )
+        _, candidate_tokens_raw = postprocess_keywords_tokens((resp.choices[0].message.content or "").strip(), max_words=target_words, max_len=max_len)
+        candidate_tokens = _filter_stage2_tokens(candidate_tokens_raw, reference_tokens, anchors, baseline)
+        candidate_out, candidate_tokens = _finalize_keyword_candidate(candidate_tokens, max_words=target_words, max_len=max_len)
 
-        raw = (resp.choices[0].message.content or "").strip()
+        if not candidate_out:
+            return seed_out, seed_tokens
+        if _semantic_overlap_count(candidate_tokens, seed_tokens) == 0:
+            return seed_out, seed_tokens
 
-        out, tokens = postprocess_keywords_tokens(
-
-            raw, max_words=target_words, max_len=max_len
-
-        )
-
-        tokens = _apply_keyword_feedback_rules(tokens)
-
-        out = normalize_space(" ".join(tokens))[:max_len].strip()
-
-
-
-        if len(out) < int(min_len):
-
-            _, seed_tokens = postprocess_keywords_tokens(
-
-                seed_keywords, max_words=target_words, max_len=max_len
-
-            )
-
-            seed_tokens = _apply_keyword_feedback_rules(seed_tokens)
-
-            existing = set(tokens)
-
-            for t in seed_tokens:
-
-                if t not in existing and len(t) >= 2:
-
-                    tokens.append(t)
-
-                    existing.add(t)
-
-                out = normalize_space(" ".join(tokens))[:max_len].strip()
-
-                if len(out) >= int(min_len):
-
-                    break
-
-
-
-        # 최소 슬롯 보강: 너무 짧거나 정보축이 부족하면 OCR/seed에서 안전 토큰 보강
-
-        slot_hint = [
-
-            "브라켓", "마운트", "경첩", "힌지", "지지대", "개스킷", "커넥터", "세트", "링", "걸이",
-
-            "유압", "회전", "각도조절", "무타공", "고정", "연결", "밀폐", "차단", "누수방지",
-
-            "본넷", "트렁크", "게이트", "테이블", "캠핑", "정원", "화분", "벽면", "콘센트", "트레일러",
-
-            "스테인리스", "아연합금", "니켈", "스틸", "블랙", "실버", "ABS", "304",
-
-        ]
-
-        if len(tokens) < 10:
-
-            extra_source = f"{seed_keywords} {ocr_text}".strip()
-
-            _, extra_tokens = postprocess_keywords_tokens(extra_source, max_words=40, max_len=220)
-
-            extra_tokens = _apply_keyword_feedback_rules(extra_tokens)
-
-            existing = set(tokens)
-
-            for t in extra_tokens:
-
-                if len(tokens) >= target_words:
-
-                    break
-
-                if t in existing or len(t) < 2:
-
-                    continue
-
-                if not any(h in t for h in slot_hint):
-
-                    continue
-
-                tokens.append(t)
-
-                existing.add(t)
-
-
-
-        # 트럭 풀링 계열 최소 보강
-
-        if any("풀링" in t for t in tokens):
-
-            existing = set(tokens)
-
-            for t in ["304", "다용도"]:
-
-                if t not in existing:
-
-                    insert_at = 2 if len(tokens) >= 2 else len(tokens)
-
-                    tokens.insert(insert_at, t)
-
-                    existing.add(t)
-
-
-
-        tokens = _apply_keyword_feedback_rules(tokens)
-
-        if len(tokens) > target_words:
-
-            tokens = tokens[:target_words]
-
-        out = normalize_space(" ".join(tokens))[:max_len].strip()
-
-        return out, tokens
-
+        candidate_score = keyword_local_score(candidate_out, base_name=seed_keywords, anchors=anchors, baseline=baseline)
+        if candidate_score < seed_score:
+            return seed_out, seed_tokens
+        return candidate_out, candidate_tokens
     except Exception as e:
-
         LAST_GPT_ERROR = f"{type(e).__name__}: {e}"
-
-        out, tokens = postprocess_keywords_tokens(
-
-            seed_keywords, max_words=target_words, max_len=max_len
-
-        )
-
-        tokens = _apply_keyword_feedback_rules(tokens)
-
-        if len(tokens) < 10:
-
-            _, extra_tokens = postprocess_keywords_tokens(f"{seed_keywords} {ocr_text}", max_words=40, max_len=220)
-
-            extra_tokens = _apply_keyword_feedback_rules(extra_tokens)
-
-            existing = set(tokens)
-
-            slot_hint = ["브라켓","마운트","경첩","힌지","지지대","개스킷","커넥터","세트","링","걸이","트레일러","스테인리스","아연합금","니켈","스틸","ABS","304","정원","화분","벽면","콘센트"]
-
-            for t in extra_tokens:
-
-                if len(tokens) >= target_words:
-
-                    break
-
-                if t in existing or len(t) < 2:
-
-                    continue
-
-                if not any(h in t for h in slot_hint):
-
-                    continue
-
-                tokens.append(t)
-
-                existing.add(t)
-
-        if any("풀링" in t for t in tokens):
-
-            existing = set(tokens)
-
-            for t in ["304", "다용도"]:
-
-                if t not in existing and len(tokens) < target_words:
-
-                    tokens.append(t)
-
-                    existing.add(t)
-
-        tokens = _apply_keyword_feedback_rules(tokens)
-
-        out = normalize_space(" ".join(tokens[:target_words]))[:max_len].strip()
-
-        return out, tokens[:target_words]
-
-
-
-
+        return seed_out, seed_tokens
 
 def _extract_naver_candidates_from_table(naver_keyword_table: str):
 

@@ -99,8 +99,7 @@ class OcrWindow(QtWidgets.QMainWindow):
         self.gcp_cred_edit = DropLineEdit(mode="file")
         self.gcp_cred_edit.setPlaceholderText("Google Cloud 서비스 계정 키 파일 (.json)")
         # 기본 경로 자동 탐색
-        default_cred = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__)))), "google_vision_key.json")
+        default_cred = os.path.join(os.path.expanduser("~"), "Desktop", "key", "google_vision_key.json")
         if os.path.isfile(default_cred):
             self.gcp_cred_edit.setText(default_cred)
         eg.addWidget(self.gcp_cred_edit, 1, 1, 1, 2)

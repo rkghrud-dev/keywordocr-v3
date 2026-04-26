@@ -629,6 +629,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
 
+        self.keyword_version_combo = QtWidgets.QComboBox()
+
+        self.keyword_version_combo.addItems(["3.0", "2.0", "1.0"])
+
+        self.keyword_version_combo.setCurrentText("2.0")
+
+        self.keyword_version_combo.setToolTip("3.0=타겟형(소스엄격/A·B 독립), 2.0=근거 우선 정제형, 1.0=확장형")
+
+
+
         self.model_desc = QtWidgets.QLabel("")
 
         self.model_desc.setStyleSheet("color:#546e7a;")
@@ -670,6 +680,12 @@ class MainWindow(QtWidgets.QMainWindow):
         row_model.addWidget(QtWidgets.QLabel("롱테일 모델"))
 
         row_model.addWidget(self.model_longtail_combo)
+
+        row_model.addSpacing(16)
+
+        row_model.addWidget(QtWidgets.QLabel("키워드 버전"))
+
+        row_model.addWidget(self.keyword_version_combo)
 
         row_model.addSpacing(12)
 
@@ -1359,7 +1375,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
 
-        self.cafe24_token_path = QtWidgets.QLineEdit(self._app_root_path("cafe24_token.txt"))
+        self.cafe24_token_path = QtWidgets.QLineEdit(self._desktop_key_path("cafe24_token.txt"))
 
         token_btn = QtWidgets.QPushButton("찾기")
 
@@ -4565,7 +4581,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # 설정값 수집 (옵션 가격 확인 탭의 이미지 설정 사용)
 
-        cfg_path = self._app_root_path("cafe24_token.txt")
+        cfg_path = self._desktop_key_path("cafe24_token.txt")
 
         date_tag = self.cafe24_date_tag.text().strip() or QtCore.QDate.currentDate().toString("yyyyMMdd")
 
@@ -4675,11 +4691,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         token_src = self.cafe24_token_path.text().strip()
 
-        token_dst = self._app_root_path("cafe24_token.txt")
+        token_dst = self._desktop_key_path("cafe24_token.txt")
 
         if token_src and os.path.isfile(token_src) and os.path.abspath(token_src) != os.path.abspath(token_dst):
 
             try:
+
+                os.makedirs(os.path.dirname(token_dst), exist_ok=True)
 
                 with open(token_src, "r", encoding="utf-8") as rf:
 
@@ -5161,9 +5179,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _browse_token(self) -> None:
 
+        key_dir = self._desktop_key_path("")
+
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
 
-            self, "Cafe24 토큰 파일 선택", "", "Text Files (*.txt)"
+            self, "Cafe24 토큰 파일 선택", key_dir, "Token Files (*.json *.txt)"
 
         )
 
@@ -5210,6 +5230,11 @@ class MainWindow(QtWidgets.QMainWindow):
         root = os.path.abspath(os.path.join(here, "..", ".."))
 
         return os.path.join(root, name)
+
+
+    def _desktop_key_path(self, name: str) -> str:
+
+        return os.path.join(os.path.expanduser("~"), "Desktop", "key", name)
 
 
 
@@ -5711,6 +5736,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
             model_longtail=self._normalize_runtime_model_name(self.model_longtail_combo.currentText(), self._default_longtail_model),
 
+            keyword_version=self.keyword_version_combo.currentText().strip(),
+
             max_words=self.max_words.value(),
 
             max_len=self.max_len.value(),
@@ -5895,6 +5922,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
             model_longtail=self._normalize_runtime_model_name(self.model_longtail_combo.currentText(), self._default_longtail_model),
 
+            keyword_version=self.keyword_version_combo.currentText().strip(),
+
             max_words=self.max_words.value(),
 
             max_len=self.max_len.value(),
@@ -6072,6 +6101,8 @@ class MainWindow(QtWidgets.QMainWindow):
             model_keyword=self._normalize_runtime_model_name(self.model_keyword_combo.currentText(), self._default_keyword_model),
 
             model_longtail=self._normalize_runtime_model_name(self.model_longtail_combo.currentText(), self._default_longtail_model),
+
+            keyword_version=self.keyword_version_combo.currentText().strip(),
 
             max_words=self.max_words.value(),
 
@@ -6505,15 +6536,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
 
-        # ensure token file is in app root (copy if needed)
+        # ensure token file is in Desktop/key (copy if needed)
 
         token_src = self.cafe24_token_path.text().strip()
 
-        token_dst = self._app_root_path("cafe24_token.txt")
+        token_dst = self._desktop_key_path("cafe24_token.txt")
 
         if token_src and os.path.isfile(token_src) and os.path.abspath(token_src) != os.path.abspath(token_dst):
 
             try:
+
+                os.makedirs(os.path.dirname(token_dst), exist_ok=True)
 
                 with open(token_src, "r", encoding="utf-8") as rf:
 
@@ -6909,6 +6942,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._settings.setValue("model_longtail", self._normalize_runtime_model_name(self.model_longtail_combo.currentText(), self._default_longtail_model))
 
+        self._settings.setValue("keyword_version", self.keyword_version_combo.currentText().strip())
+
         self._settings.setValue("cafe24_match_mode", self.cafe24_match_mode.currentText().strip())
 
         self._settings.setValue("cafe24_match_prefix", self.cafe24_match_prefix.value())
@@ -6978,6 +7013,8 @@ class MainWindow(QtWidgets.QMainWindow):
         model_keyword = self._normalize_runtime_model_name(self._settings.value("model_keyword", ""), self._default_keyword_model)
 
         model_longtail = self._normalize_runtime_model_name(self._settings.value("model_longtail", ""), self._default_longtail_model)
+
+        keyword_version = str(self._settings.value("keyword_version", "2.0") or "2.0").strip()
 
         cafe24_match_mode = self._settings.value("cafe24_match_mode", "PREFIX")
 
@@ -7058,6 +7095,14 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
 
             self.model_longtail_combo.setCurrentText(self._default_longtail_model)
+
+        if keyword_version and self.keyword_version_combo.findText(str(keyword_version)) >= 0:
+
+            self.keyword_version_combo.setCurrentText(str(keyword_version))
+
+        else:
+
+            self.keyword_version_combo.setCurrentText("2.0")
 
         self.cafe24_match_mode.setCurrentText(str(cafe24_match_mode))
 
@@ -7145,6 +7190,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.model_keyword_combo.currentTextChanged.connect(self._save_settings)
 
         self.model_longtail_combo.currentTextChanged.connect(self._save_settings)
+
+        self.keyword_version_combo.currentTextChanged.connect(self._save_settings)
 
         self.logo_pos.currentTextChanged.connect(self._save_settings)
 
@@ -7476,6 +7523,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
             model_longtail=self._normalize_runtime_model_name(self.model_longtail_combo.currentText(), self._default_longtail_model),
 
+            keyword_version=self.keyword_version_combo.currentText().strip(),
+
             max_words=self.max_words.value(),
 
             max_len=self.max_len.value(),
@@ -7695,6 +7744,8 @@ class MainWindow(QtWidgets.QMainWindow):
             model_keyword=self._normalize_runtime_model_name(self.model_keyword_combo.currentText(), self._default_keyword_model),
 
             model_longtail=self._normalize_runtime_model_name(self.model_longtail_combo.currentText(), self._default_longtail_model),
+
+            keyword_version=self.keyword_version_combo.currentText().strip(),
 
             max_words=self.max_words.value(),
 

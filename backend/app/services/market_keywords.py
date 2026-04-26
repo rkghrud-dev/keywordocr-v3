@@ -59,6 +59,16 @@ _EXTRA_BAN = {
     "인싸",
     "필수품",
     "데일리",
+    "프리미엄",
+    "고품질",
+    "최고급",
+    "베스트",
+    "핫딜",
+    "신상",
+    "모음",
+    "추천템",
+    "가성비",
+    "초특가",
 }
 
 _USAGE_HINTS = {
@@ -80,6 +90,23 @@ _USAGE_HINTS = {
     "원예",
     "호스",
     "급수라인",
+    "욕실",
+    "화장실",
+    "주방",
+    "싱크대",
+    "세면대",
+    "배수구",
+    "하수구",
+    "창문",
+    "벽면",
+    "천장",
+    "선반",
+    "옷장",
+    "서랍장",
+    "붙박이장",
+    "책상",
+    "캐비닛",
+    "수납장",
 }
 
 _FUNCTION_HINTS = {
@@ -100,6 +127,20 @@ _FUNCTION_HINTS = {
     "개폐",
     "작업등",
     "실링",
+    "절단",
+    "컷팅",
+    "결속",
+    "수납",
+    "정리",
+    "지지",
+    "부착",
+    "끼움",
+    "교체",
+    "수리",
+    "보수",
+    "배수",
+    "분사",
+    "고정력",
 }
 
 _PROBLEM_HINTS = {
@@ -167,7 +208,39 @@ _IDENTITY_HINTS = {
     "도어락",
     "앵커포인트",
     "조명",
+    "클램프",
+    "브러시",
+    "필터",
+    "밸브",
+    "후크",
+    "볼트",
+    "너트",
+    "나사",
+    "핀",
+    "호스",
+    "파이프",
+    "케이블",
+    "밴드",
+    "테이프",
+    "커버",
+    "마개",
+    "캡",
+    "노즐",
+    "레일",
+    "롤러",
 }
+
+_SPEC_NUMERIC_RE = re.compile(
+    r"("
+    r"m\d+|"
+    r"\d+(/\d+)?(mm|cm|m|ml|l|v|w|a|kg|g|호|인치|평|구|단|매|개|입|p|pcs|ea)|"
+    r"\d+(인용|인분|자루|박스)|"
+    r"\d+[xX]\d+"
+    r")",
+    re.IGNORECASE,
+)
+_PRICE_NUMERIC_RE = re.compile(r"\d{2,}(원|₩|만원|천원)")
+_BROKEN_NUMERIC_RE = re.compile(r"^(?:[0-9OI]{3,}|[A-Z]?[0-9OI]{2,}[A-Z]?)$", re.IGNORECASE)
 
 
 def generate_market_keyword_packages(
@@ -182,6 +255,10 @@ def generate_market_keyword_packages(
 ) -> MarketKeywordPackages:
     anchor_set = set(anchors or [])
     baseline_set = set(baseline or [])
+    if not anchor_set:
+        anchor_set = set(core.build_anchors_from_name(product_name))
+    if not baseline_set:
+        baseline_set = set(core.build_baseline_tokens_from_name(product_name))
     avoid_keys = _build_avoid_semantic_keys(avoid_terms)
     llm_bucketed = _generate_bucket_candidates_llm(
         product_name=product_name,
@@ -325,11 +402,50 @@ def _matches_avoid_semantics(key: str, avoid_keys: set[str] | None) -> bool:
             return True
     return False
 
+
+def _has_bad_numeric_shape(text: str) -> bool:
+    compact = _compact_phrase(text)
+    if not compact:
+        return False
+    if not re.search(r"\d", compact):
+        return False
+    if re.fullmatch(r"\d+", compact):
+        return True
+    if _PRICE_NUMERIC_RE.search(compact):
+        return True
+    if _SPEC_NUMERIC_RE.search(compact):
+        return False
+    if _BROKEN_NUMERIC_RE.fullmatch(compact):
+        return True
+    if re.fullmatch(r"[A-Za-z0-9]+", compact):
+        return True
+    return False
+
+
+def _drop_contained_weaker_key(key: str, seen: set[str], out: list[str]) -> bool:
+    if len(key) < 3:
+        return True
+
+    for existing in list(seen):
+        if len(existing) < 3:
+            continue
+        if key == existing:
+            return False
+        if key in existing:
+            return False
+        if existing in key:
+            seen.remove(existing)
+            out[:] = [item for item in out if _semantic_key(item) != existing]
+    return True
+
+
 def _is_bad_phrase(text: str) -> bool:
     compact = _compact_phrase(text)
     if not compact or len(compact) < 2 or len(compact) > 20:
         return True
     if re.fullmatch(r"\d+", compact):
+        return True
+    if _has_bad_numeric_shape(compact):
         return True
     if _BAD_END_RE.search(compact) or _BAD_JOSA_RE.search(compact):
         return True
@@ -342,10 +458,19 @@ def _passes_topic(text: str, anchors: set[str], baseline: set[str]) -> bool:
     compact = _compact_phrase(text)
     if not compact:
         return False
+    key = _semantic_key(compact)
+    for ref in set(anchors or set()) | set(baseline or set()):
+        ref_key = _semantic_key(str(ref))
+        if not key or not ref_key:
+            continue
+        if key == ref_key:
+            return True
+        if len(key) >= 3 and len(ref_key) >= 3 and (key in ref_key or ref_key in key):
+            return True
     if anchors and baseline:
         return core.is_on_topic(compact, anchors, baseline)
     if baseline:
-        return any(base and base in compact for base in baseline)
+        return core.is_consistent_with_baseline(compact, baseline)
     return True
 
 
@@ -393,13 +518,15 @@ def _generate_bucket_candidates_llm(
 - problem_solution: 방지/차단/보호/정리 목적, 0~3개
 - material_spec: 재질, 색상, 규격, 호환 힌트, 0~3개
 - audience_scene: 사용자 유형, 현장 표현, 구매 문맥, 0~2개
-- synonyms: 실무 검색에서 자주 쓰는 유사어/띄어쓰기 변형, 0~2개
+- synonyms: 실무 유사어/띄어쓰기 변형만, 0~2개
 
 절대 규칙:
 - 귀여운, 예쁜, 고급진, 럭셔리, 힐링, 인싸, 필수품, 데일리, 추천, 인기 같은 감성/홍보어 금지
 - 강아지 반려견 댕댕이 애견처럼 같은 뜻을 3개 이상 늘어놓지 말 것
 - 자동차 차량 오토바이 바이크 퀵보드 자전거처럼 무관 확장을 하지 말 것
 - 네이버 검색 데이터는 같은 카테고리 여부 확인과 우선순위 참고용으로만 사용하고, 새로운 카테고리는 도입하지 말 것
+- intentional typo, 맞춤법 변형, 혼동 유도형 표기변형 생성 금지
+- product_name과 source_text가 충돌하면 product_name + OCR 교집합을 우선한다
 - 근거가 약한 항목은 빈 배열로 둔다
 
 참고 구조:
@@ -576,6 +703,8 @@ def _build_coupang_tags(
         key = _semantic_key(phrase)
         if not key or key in seen:
             return False
+        if not _drop_contained_weaker_key(key, seen, out):
+            return False
         seen.add(key)
         out.append(phrase)
         return True
@@ -652,8 +781,15 @@ def _build_naver_tags(
         key = _semantic_key(phrase)
         if not key or key in seen:
             return False
+        prev_seen = set(seen)
+        prev_out = list(out)
+        if not _drop_contained_weaker_key(key, seen, out):
+            return False
         projected = len("|".join(out + [phrase]))
         if projected > char_budget:
+            seen.clear()
+            seen.update(prev_seen)
+            out[:] = prev_out
             return False
         seen.add(key)
         out.append(phrase)

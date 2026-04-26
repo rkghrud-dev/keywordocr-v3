@@ -77,6 +77,7 @@ public partial class MainWindow : Window
         Cafe24DateTag.Text = DateTime.Now.ToString("yyyyMMdd");
         LoadTokenInfo();
         LoadAppSettings();
+        ApplyDefaultWorkflowSelections();
         if (string.IsNullOrEmpty(SettingsBTokenPath.Text))
             LoadTokenInfoB(); // 설정 파일 없을 때 기본 경로로 시도
         SyncCafe24MarketTargetCheckBoxes(true, true);
@@ -86,6 +87,12 @@ public partial class MainWindow : Window
 
         Log("KeywordOCR v3 시작");
         Log($"Python 루트: {_pythonRoot}");
+    }
+
+    private void ApplyDefaultWorkflowSelections()
+    {
+        TestChunkSizeCombo.SelectedIndex = 4; // 분할안함
+        SetKeywordVersionSelection("3.0");
     }
 
     private static (string V3Root, string LegacyRoot, string PythonRoot) ResolveApplicationRoots()
@@ -196,6 +203,20 @@ public partial class MainWindow : Window
         if (homeSelected) markets.Add("홈런마켓");
         if (readySelected) markets.Add("준비몰");
         return markets.Count == 0 ? "선택 없음" : string.Join(" + ", markets);
+    }
+
+    private void ShowTab_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: string tabName })
+        {
+            return;
+        }
+
+        if (FindName(tabName) is TabItem tab)
+        {
+            tab.Visibility = Visibility.Visible;
+            tab.IsSelected = true;
+        }
     }
 
 
@@ -722,7 +743,7 @@ public partial class MainWindow : Window
         {
             "1.0" => "1.0",
             "3.0" => "3.0",
-            _ => "2.0",
+            _ => "3.0",
         };
     }
 
@@ -731,7 +752,7 @@ public partial class MainWindow : Window
         var trimmed = version?.Trim();
         var normalized = string.Equals(trimmed, "1.0", StringComparison.OrdinalIgnoreCase) ? "1.0"
             : string.Equals(trimmed, "3.0", StringComparison.OrdinalIgnoreCase) ? "3.0"
-            : "2.0";
+            : "3.0";
         _syncingKeywordVersion = true;
         try
         {
@@ -752,7 +773,7 @@ public partial class MainWindow : Window
         {
             "1.0" => "1.0",
             "3.0" => "3.0",
-            _ => "2.0",
+            _ => "3.0",
         };
 
         SetKeywordVersionSelection(normalized);
@@ -1556,6 +1577,9 @@ public partial class MainWindow : Window
                 if (!HasBMarketSheet(f))
                     Log($"  ⚠ B마켓 시트 없음: {Path.GetFileName(f)} — 준비몰 신규등록은 이 파일에서 스킵됩니다.");
             }
+
+            LoadBasicCafe24ProductList(_testLlmResultFiles[0]);
+            Log($"신규등록 목록 자동 로드: {_basicCafe24Items.Count}개");
         }
     }
 
@@ -3557,6 +3581,7 @@ public partial class MainWindow : Window
     {
         _lastOutputRoot = outputRoot;
         LoadImages_Click(this, new RoutedEventArgs());
+        ImageSelectionTab.Visibility = Visibility.Visible;
         ImageSelectionTab.IsSelected = true;
     }
 
@@ -3748,6 +3773,9 @@ public partial class MainWindow : Window
                 RefreshHistoryGrid();
             }
         }
+
+        BasicRunTab.IsSelected = true;
+        StatusText.Text = "이미지 선택 저장 완료";
     }
 
     private void LoadImageSelectionsFromJson(string path)
