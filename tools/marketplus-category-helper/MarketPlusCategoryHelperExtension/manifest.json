@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "MarketPlus Category Helper",
+  "version": "4.3.0",
+  "description": "Cafe24 MarketPlus registerall category helper",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://mp.cafe24.com/mp/product/front/registerall*",
+        "http://mp.cafe24.com/mp/product/front/registerall*",
+        "https://*.cafe24.com/mp/product/front/registerall*",
+        "http://*.cafe24.com/mp/product/front/registerall*"
+      ],
+      "js": ["marketplus-category-helper.content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "host_permissions": [
+    "http://localhost:5555/*",
+    "http://127.0.0.1:5555/*",
+    "https://mp.cafe24.com/*",
+    "http://mp.cafe24.com/*",
+    "https://*.cafe24.com/*",
+    "http://*.cafe24.com/*"
+  ]
+}
+
+

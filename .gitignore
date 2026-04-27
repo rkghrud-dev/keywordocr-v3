@@ -37,6 +37,7 @@ cafe24_token.txt
 user_stopwords.json
 data/ocr_learned_noise.json
 startup_error.log
+tools/marketplus-category-helper/marketplus_category_map_store.json
 ~$*.xlsx
 .claude/
 
