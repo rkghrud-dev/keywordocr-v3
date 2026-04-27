@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MarketPlus Category Helper
 // @namespace    cafe24-marketplus-helper
-// @version      4.3
+// @version      4.4
 // @description  마켓플러스 카테고리 네이버연동 자동매칭
 // @match        *://mp.cafe24.com/*registerall*
 // @match        *://*.cafe24.com/mp/product/front/registerall*
@@ -69,6 +69,44 @@
             return await resp.json();
         } catch (e) {
             return { matched: false, error: 'category map server not running' };
+        }
+    }
+
+    function readFileAsBase64(file) {
+        return new Promise(function (resolve, reject) {
+            var reader = new FileReader();
+            reader.onload = function () {
+                var text = String(reader.result || '');
+                resolve(text.indexOf(',') >= 0 ? text.split(',')[1] : text);
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+        });
+    }
+
+    async function uploadCategoryMapFile(file) {
+        if (!file) {
+            setStatus('map', '업로드할 xlsx 파일을 선택하세요');
+            return;
+        }
+        setStatus('map', '카테고리맵 업로드 중...');
+        try {
+            var contentBase64 = await readFileAsBase64(file);
+            var resp = await fetch(PROXY_URL + '/api/upload-map', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: file.name, contentBase64: contentBase64 })
+            });
+            var data = await resp.json();
+            if (!data.ok) {
+                setStatus('map', '업로드 실패: ' + (data.error || 'unknown error'));
+                return;
+            }
+            categoryMapAutoApplied = false;
+            setStatus('map', '업로드 완료: 상품 ' + data.productCount + '개 / 레코드 ' + data.recordCount + '개');
+            setTimeout(function () { applyCategoryMap(false); }, 400);
+        } catch (e) {
+            setStatus('map', '업로드 실패: ' + e.message);
         }
     }
 
@@ -612,6 +650,12 @@
             '</div>',
             '<div class="mph-section">',
             '  <div class="mph-label">카테고리맵</div>',
+            '  <input id="mph-map-file" type="file" accept=".xlsx" style="display:none;">',
+            '  <div class="mph-row">',
+            '    <button id="mph-map-file-pick" class="mph-btn mph-btn-blue" style="flex:1;">파일 선택</button>',
+            '    <button id="mph-map-upload" class="mph-btn mph-btn-gray">업로드</button>',
+            '  </div>',
+            '  <div id="mph-map-file-name" class="mph-hint">선택된 파일 없음</div>',
             '  <button id="mph-map-apply" class="mph-btn mph-btn-green" style="width:100%;padding:9px;font-size:13px;">업로드 매칭표 적용</button>',
             '  <div class="mph-hint">localhost:5555에 업로드된 엑셀 매칭표를 상품명으로 조회</div>',
             '  <div class="mph-status" id="mph-status-map"></div>',
@@ -668,6 +712,15 @@
         document.getElementById('mph-keyword').addEventListener('keydown', function (e) { if (e.key === 'Enter') document.getElementById('mph-search-btn').click(); });
 
         document.getElementById('mph-auto-match').addEventListener('click', function () { runAutoMatch(); });
+        document.getElementById('mph-map-file-pick').addEventListener('click', function () { document.getElementById('mph-map-file').click(); });
+        document.getElementById('mph-map-file').addEventListener('change', function () {
+            var file = this.files && this.files[0];
+            document.getElementById('mph-map-file-name').textContent = file ? file.name : '선택된 파일 없음';
+        });
+        document.getElementById('mph-map-upload').addEventListener('click', function () {
+            var input = document.getElementById('mph-map-file');
+            uploadCategoryMapFile(input.files && input.files[0]);
+        });
         document.getElementById('mph-map-apply').addEventListener('click', function () { applyCategoryMap(false); });
 
         refreshPresetSelect();

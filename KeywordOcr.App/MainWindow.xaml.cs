@@ -98,17 +98,19 @@ public partial class MainWindow : Window
     private static (string V3Root, string LegacyRoot, string PythonRoot) ResolveApplicationRoots()
     {
         var baseDir = Path.GetFullPath(AppContext.BaseDirectory);
-        var candidates = new[]
+        var candidates = new List<string>();
+        var current = baseDir;
+        for (var i = 0; i < 12; i++)
         {
-            baseDir,
-            Path.GetFullPath(Path.Combine(baseDir, "..")),
-            Path.GetFullPath(Path.Combine(baseDir, "..", "..")),
-            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..")),
-            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", ".."))
-        };
+            candidates.Add(current);
+            var parent = Directory.GetParent(current);
+            if (parent is null)
+                break;
+            current = parent.FullName;
+        }
 
         var v3Root = candidates.FirstOrDefault(IsV3Root)
-            ?? Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", ".."));
+            ?? Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", ".."));
 
         var legacyRoot = File.Exists(Path.Combine(v3Root, "app_settings.json"))
             || Directory.Exists(Path.Combine(v3Root, "backend"))
@@ -1268,6 +1270,21 @@ public partial class MainWindow : Window
     private static string BuildTestCodexCommand(string workingDir, string instruction)
         => $"cd \"{workingDir}\"; codex --full-auto \"{instruction}\"";
 
+    private static string GetCategoryMatchingCommandGuide(string versionSuffix, bool extended, string? inputFileName = null)
+    {
+        var resultDir = extended ? $"llm_result_ext_{versionSuffix}" : $"llm_result_{versionSuffix}";
+        var outputStem = extended ? $"category_match_ext_{versionSuffix}" : $"category_match_{versionSuffix}";
+        var outputFile = string.IsNullOrWhiteSpace(inputFileName)
+            ? $"{resultDir}/{outputStem}.xlsx"
+            : $"{resultDir}/{Path.GetFileNameWithoutExtension(inputFileName)}_{outputStem}.xlsx";
+
+        return $"키워드 저장 후 상품코드/상품명 기준 마켓별 카테고리 매칭 파일도 `{outputFile}`로 추가 생성해. " +
+               "카테고리 기준표는 `category_reference/` 또는 같은 폴더의 `*_categories.csv`, `esm_auction_gmarket_category_matching.csv`를 우선 사용해. " +
+               "포함 열: 상품코드, 상품명, 네이버카테고리코드/경로, 쿠팡카테고리코드/경로, 11번가카테고리코드/경로, " +
+               "롯데ON표준카테고리코드/경로, 롯데ON전시카테고리코드/경로, 옥션카테고리코드/경로, ESM카테고리경로, 확신도, 검수필요, 매칭근거. " +
+               "외부 검색 없이 상품명/OCR/생성 키워드와 제공된 카테고리표만 근거로 해.";
+    }
+
     private void RefreshTestCodexCommands(string outputRoot)
     {
         var selectedKeywordVersion = GetSelectedKeywordVersion();
@@ -1303,12 +1320,12 @@ public partial class MainWindow : Window
                     var outputFileName = $"{Path.GetFileNameWithoutExtension(fileName)}_llm_{versionSuffix}.xlsx";
                     var cmd = BuildTestCodexCommand(
                         chunksDir,
-                        $"keyword_skill.md 지시서에 따라 {fileName} 파일의 키워드를 채워서 llm_result_{versionSuffix}/{outputFileName} 로 저장해. {GetKeywordVersionCommandGuide(selectedKeywordVersion, extended: false)}");
+                        $"keyword_skill.md 지시서에 따라 {fileName} 파일의 키워드를 채워서 llm_result_{versionSuffix}/{outputFileName} 로 저장해. {GetKeywordVersionCommandGuide(selectedKeywordVersion, extended: false)} {GetCategoryMatchingCommandGuide(versionSuffix, extended: false, inputFileName: fileName)}");
                     _codexCommands.Add(cmd);
 
                     var cmdExt = BuildTestCodexCommand(
                         chunksDir,
-                        $"keyword_skill_extended.md 지시서에 따라 {fileName} 파일의 키워드를 채워서 llm_result_ext_{versionSuffix}/{outputFileName} 로 저장해. {GetKeywordVersionCommandGuide(selectedKeywordVersion, extended: true)}");
+                        $"keyword_skill_extended.md 지시서에 따라 {fileName} 파일의 키워드를 채워서 llm_result_ext_{versionSuffix}/{outputFileName} 로 저장해. {GetKeywordVersionCommandGuide(selectedKeywordVersion, extended: true)} {GetCategoryMatchingCommandGuide(versionSuffix, extended: true, inputFileName: fileName)}");
                     _codexCommandsExt.Add(cmdExt);
                 }
 
@@ -1331,10 +1348,10 @@ public partial class MainWindow : Window
 
         _codexCommands.Add(BuildTestCodexCommand(
             outputRoot,
-            $"keyword_skill.md 지시서에 따라 {uploadName} 파일의 키워드를 채워서 llm_result_{versionSuffix}/ 아래에 저장해. 파일명은 입력 파일명 기준으로 `_llm_{versionSuffix}.xlsx` 형식으로 저장해. {GetKeywordVersionCommandGuide(selectedKeywordVersion, extended: false)}"));
+            $"keyword_skill.md 지시서에 따라 {uploadName} 파일의 키워드를 채워서 llm_result_{versionSuffix}/ 아래에 저장해. 파일명은 입력 파일명 기준으로 `_llm_{versionSuffix}.xlsx` 형식으로 저장해. {GetKeywordVersionCommandGuide(selectedKeywordVersion, extended: false)} {GetCategoryMatchingCommandGuide(versionSuffix, extended: false, inputFileName: uploadName)}"));
         _codexCommandsExt.Add(BuildTestCodexCommand(
             outputRoot,
-            $"keyword_skill_extended.md 지시서에 따라 {uploadName} 파일의 키워드를 채워서 llm_result_ext_{versionSuffix}/ 아래에 저장해. 파일명은 입력 파일명 기준으로 `_llm_{versionSuffix}.xlsx` 형식으로 저장해. {GetKeywordVersionCommandGuide(selectedKeywordVersion, extended: true)}"));
+            $"keyword_skill_extended.md 지시서에 따라 {uploadName} 파일의 키워드를 채워서 llm_result_ext_{versionSuffix}/ 아래에 저장해. 파일명은 입력 파일명 기준으로 `_llm_{versionSuffix}.xlsx` 형식으로 저장해. {GetKeywordVersionCommandGuide(selectedKeywordVersion, extended: true)} {GetCategoryMatchingCommandGuide(versionSuffix, extended: true, inputFileName: uploadName)}"));
 
         TestCodexCmdTitle.Text = $"Codex 실행 (기본 + 확장, {versionLabel})";
         Log($"keyword_skill.md + extended → Codex에서 실행 ({versionLabel})");
@@ -1789,6 +1806,47 @@ public partial class MainWindow : Window
             if (found != null) return found;
         }
         return null;
+    }
+
+    private async Task TryUploadLatestMarketPlusCategoryMapAsync(
+        string uploadFile,
+        IEnumerable<string> llmResultFiles,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var candidateRoots = new List<string?>
+            {
+                Path.GetDirectoryName(uploadFile),
+                _testOutputRoot,
+                _lastOutputRoot
+            };
+
+            var priorityFiles = new List<string?> { uploadFile };
+            foreach (var file in llmResultFiles)
+            {
+                priorityFiles.Add(file);
+
+                var fileDir = Path.GetDirectoryName(file);
+                candidateRoots.Add(fileDir);
+                if (!string.IsNullOrWhiteSpace(fileDir))
+                    candidateRoots.Add(Path.GetDirectoryName(fileDir));
+            }
+
+            var uploader = new MarketPlusCategoryMapAutoUploader(
+                _v3Root,
+                new Progress<string>(msg => Log(msg)));
+
+            await uploader.UploadLatestAsync(candidateRoots, priorityFiles, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Log($"[카테고리맵] 자동 업로드 실패: {ex.Message}");
+        }
     }
 
     private sealed class MarketResultRow
@@ -3381,12 +3439,15 @@ public partial class MainWindow : Window
 
         try
         {
-            StatusText.Text = "Cafe24 신규등록 중...";
+            StatusText.Text = "카테고리맵 자동 업로드 중...";
             ProgressBar.IsIndeterminate = true;
 
             var createService = new Cafe24CreateProductService(_v3Root, _legacyRoot);
             var progress = new Progress<string>(msg => Log(msg));
             int totalCreated = 0, totalError = 0, totalSkipped = 0;
+
+            await TryUploadLatestMarketPlusCategoryMapAsync(uploadFile, files, _cts.Token);
+            StatusText.Text = "Cafe24 신규등록 중...";
 
             if (doHome)
             {

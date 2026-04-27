@@ -1,3 +1,7 @@
+param(
+    [switch]$Force
+)
+
 $ErrorActionPreference = 'Stop'
 
 $BaseDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -48,7 +52,7 @@ function Start-HelperServer {
 }
 
 try {
-    if (Test-HelperServer) {
+    if (-not $Force -and (Test-HelperServer)) {
         Write-Step 'MarketPlus helper server is already running.'
     } else {
         Stop-OldHelperServer

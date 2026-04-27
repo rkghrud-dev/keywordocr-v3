@@ -29,6 +29,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STORE_PATH = os.path.join(BASE_DIR, "marketplus_category_map_store.json")
 HELPER_JS_PATH = os.path.join(BASE_DIR, "marketplus-category-helper.user.js")
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+HELPER_FEATURE_VERSION = 2
 
 XML_NS = {
     "a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
@@ -48,6 +49,32 @@ def normalize_code_key(value: str) -> str:
     value = str(value or "").lower()
     value = re.sub(r"[^0-9a-z가-힣]+", "", value)
     return value.strip()
+
+
+def name_tokens(value: str) -> set[str]:
+    value = str(value or "").lower()
+    value = re.sub(r"[a-z]{1,2}\d{5,}[a-z]?", " ", value)
+    tokens = set()
+    for token in re.findall(r"[0-9a-z가-힣]+", value):
+        if len(token) <= 1:
+            continue
+        if re.fullmatch(r"\d+", token):
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def token_match_score(left: str, right: str) -> float:
+    left_tokens = name_tokens(left)
+    right_tokens = name_tokens(right)
+    if not left_tokens or not right_tokens:
+        return 0.0
+    overlap = len(left_tokens & right_tokens)
+    if overlap == 0:
+        return 0.0
+    containment = overlap / max(1, min(len(left_tokens), len(right_tokens)))
+    jaccard = overlap / max(1, len(left_tokens | right_tokens))
+    return max(jaccard * 0.94, containment * 0.78)
 
 
 def to_float(value, default=0.0) -> float:
@@ -234,6 +261,85 @@ def parse_category_workbook(blob: bytes, filename: str) -> dict:
     }
 
 
+def alias_get(alias: dict, *names: str) -> str:
+    for name in names:
+        if name in alias and alias.get(name) is not None:
+            return str(alias.get(name) or "").strip()
+    return ""
+
+
+def refresh_record_keys(record: dict) -> None:
+    record["_productNameKey"] = normalize_key(record.get("productName", ""))
+    record["_productKeyKey"] = normalize_code_key(record.get("productKey", ""))
+    record["_gsCodeKey"] = normalize_code_key(record.get("gsCode", ""))
+    record["_skuKey"] = normalize_code_key(record.get("sku", ""))
+
+
+def apply_aliases_to_store(store: dict, aliases: list[dict] | None) -> int:
+    if not aliases:
+        store["aliasCount"] = 0
+        return 0
+
+    records = store.get("records") or []
+    added = 0
+    seen = {
+        (
+            str(r.get("market", "")).lower(),
+            normalize_code_key(r.get("productKey", "") or r.get("gsCode", "") or r.get("sku", "")),
+            normalize_key(r.get("productName", "")),
+        )
+        for r in records
+    }
+
+    for alias in aliases:
+        alias_name = alias_get(alias, "productName", "ProductName", "name", "Name")
+        if not alias_name:
+            continue
+        alias_code = alias_get(alias, "productKey", "ProductKey", "gsCode", "GsCode", "sku", "Sku", "code", "Code")
+        alias_code_key = normalize_code_key(alias_code)
+        alias_name_key = normalize_key(alias_name)
+
+        matched_records = []
+        for record in records:
+            code_keys = {
+                record.get("_productKeyKey", ""),
+                record.get("_gsCodeKey", ""),
+                record.get("_skuKey", ""),
+            }
+            if alias_code_key and alias_code_key in code_keys:
+                matched_records.append(record)
+            elif alias_name_key and alias_name_key == record.get("_productNameKey", ""):
+                matched_records.append(record)
+
+        for record in list(matched_records):
+            market = str(record.get("market", "")).lower()
+            group_code = normalize_code_key(record.get("productKey", "") or record.get("gsCode", "") or record.get("sku", "") or alias_code)
+            key = (market, group_code, alias_name_key)
+            if key in seen:
+                continue
+
+            cloned = dict(record)
+            cloned["productName"] = alias_name
+            if alias_code and not cloned.get("productKey"):
+                cloned["productKey"] = alias_code
+            if alias_code and not cloned.get("gsCode"):
+                cloned["gsCode"] = alias_code
+            refresh_record_keys(cloned)
+            records.append(cloned)
+            seen.add(key)
+            added += 1
+
+    store["records"] = records
+    store["recordCount"] = len(records)
+    store["productCount"] = len({
+        r.get("productKey") or r.get("gsCode") or r.get("sku") or r.get("productName")
+        for r in records
+        if r.get("productName")
+    })
+    store["aliasCount"] = added
+    return added
+
+
 def save_store(store: dict) -> None:
     with open(STORE_PATH, "w", encoding="utf-8") as f:
         json.dump(store, f, ensure_ascii=False, indent=2)
@@ -266,6 +372,7 @@ def product_match_score(records: list[dict], product_name: str, product_code: st
                 best = max(best, 0.90)
             else:
                 best = max(best, difflib.SequenceMatcher(None, name_key, name_candidate).ratio() * 0.86)
+                best = max(best, token_match_score(product_name, record.get("productName", "")))
     return best
 
 
@@ -307,7 +414,7 @@ def lookup_category_map(product_name: str, product_code: str = "") -> dict:
             "reason": record.get("reason", ""),
         }
 
-    first = group_records[0]
+    first = max(group_records, key=lambda r: product_match_score([r], product_name, product_code))
     confidence_values = [to_float(r.get("confidence")) for r in group_records if to_float(r.get("confidence")) > 0]
     confidence = min(confidence_values) if confidence_values else 0
     return {
@@ -412,11 +519,14 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/map/status":
             store = load_store()
             self.respond({
+                "helperVersion": HELPER_FEATURE_VERSION,
+                "supportsAliases": True,
                 "uploaded": bool(store.get("records")),
                 "filename": store.get("filename", ""),
                 "uploadedAt": store.get("uploadedAt", ""),
                 "recordCount": store.get("recordCount", 0),
                 "productCount": store.get("productCount", 0),
+                "aliasCount": store.get("aliasCount", 0),
                 "storePath": STORE_PATH,
             })
             return
@@ -463,14 +573,16 @@ class Handler(BaseHTTPRequestHandler):
             content_b64 = payload.get("contentBase64") or ""
             blob = base64.b64decode(content_b64)
             store = parse_category_workbook(blob, filename)
+            alias_count = apply_aliases_to_store(store, payload.get("aliases") or [])
             save_store(store)
-            print(f'  [map-upload] {filename}: {store["productCount"]} products, {store["recordCount"]} records')
+            print(f'  [map-upload] {filename}: {store["productCount"]} products, {store["recordCount"]} records, {alias_count} aliases')
             self.respond({
                 "ok": True,
                 "filename": filename,
                 "uploadedAt": store["uploadedAt"],
                 "recordCount": store["recordCount"],
                 "productCount": store["productCount"],
+                "aliasCount": alias_count,
                 "storePath": STORE_PATH,
             })
         except Exception as e:
