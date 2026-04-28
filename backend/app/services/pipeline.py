@@ -370,6 +370,71 @@ def _split_upload_excel(upload_path: str, export_root: str, chunk_size: int, dat
     return chunk_files
 
 
+def _find_market_category_processed_dir() -> str | None:
+    """Return the shared market-category-matcher processed data directory, if available."""
+    candidates: list[str] = []
+    env_dir = os.environ.get("MARKET_CATEGORY_PROCESSED_DIR") or os.environ.get("MARKET_CATEGORY_DATA_DIR")
+    if env_dir:
+        candidates.append(env_dir)
+
+    user_profile = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+    if user_profile:
+        candidates.append(os.path.join(
+            user_profile,
+            "Desktop",
+            "프로젝트",
+            "market-category-matcher",
+            "data",
+            "processed",
+        ))
+
+    # pipeline.py -> services -> app -> backend -> keywordocr-v3. The matcher is a sibling project.
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    parent_project_dir = os.path.dirname(repo_root)
+    candidates.append(os.path.join(parent_project_dir, "market-category-matcher", "data", "processed"))
+
+    for candidate in candidates:
+        if candidate and os.path.isdir(candidate):
+            return candidate
+    return None
+
+
+def _copy_market_category_references(target_root: str, status_cb=None) -> int:
+    """Copy collected market category CSV files into target_root/category_reference."""
+    import shutil
+
+    src_dir = _find_market_category_processed_dir()
+    if not src_dir:
+        _status(status_cb, "마켓 카테고리 기준표 폴더를 찾지 못함: category_reference 복사 생략")
+        return 0
+
+    files = [
+        "naver_categories.csv",
+        "coupang_categories.csv",
+        "11st_categories.csv",
+        "lotteon_categories.csv",
+        "lotteon_standard_categories.csv",
+        "lotteon_display_categories.csv",
+        "auction_categories.csv",
+        "esm_auction_gmarket_category_matching.csv",
+    ]
+    ref_dir = os.path.join(target_root, "category_reference")
+    os.makedirs(ref_dir, exist_ok=True)
+
+    copied = 0
+    for file_name in files:
+        src = os.path.join(src_dir, file_name)
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(ref_dir, file_name))
+            copied += 1
+
+    if copied:
+        _status(status_cb, f"마켓 카테고리 기준표 {copied}개 → {ref_dir} 복사")
+    else:
+        _status(status_cb, f"마켓 카테고리 기준표 파일 없음: {src_dir}")
+    return copied
+
+
 def _generate_keyword_skill_md(export_root: str, upload_path: str, date_tag: str, chunk_size: int = 0, status_cb=None,
                                a_name_min: int = 80, a_name_max: int = 100,
                                b_name_min: int = 63, b_name_max: int = 98,
@@ -792,28 +857,69 @@ OCR결과 시트의 텍스트를 반드시 참고하여 상품의 실제 특성(
 ### B마켓 기타 컬럼
 - 상품명/검색어설정/검색키워드/상품 상세설명 외의 모든 컬럼은 `분리추출후` 시트와 **동일하게 유지**
 
-## 5단계: 마켓별 카테고리 매칭 (필수)
-같은 폴더에 있는 카테고리 트리 파일을 참조하여, 각 상품에 가장 적합한 카테고리를 선택하세요.
+## 5단계: 마켓별 카테고리 매칭 파일 생성 (필수)
+키워드 결과 엑셀을 저장한 뒤, 같은 입력 파일 기준으로 **상품코드/상품명별 마켓 카테고리 매칭 파일**도 추가 생성하세요.
 
-### 네이버 카테고리 (`naver_category_tree.txt`)
-- 파일 형식: `카테고리ID\t전체경로` (예: `50001032\t생활/건강>공구>전기용품`)
-- **`분리추출후` 시트**와 **`B마켓` 시트** 모두에 `네이버카테고리코드` 열을 추가하세요
-- 값: 카테고리 ID (숫자만, 예: `50001032`)
-- OCR 텍스트 + 상품명을 종합하여 **가장 구체적인 leaf 카테고리**를 선택하세요
-- 예: `스위치 고정핀` → 전기용품 → `50001032`
-- 예: `밑창 테이프` → 신발용품>보호쿠션/패드 → `50000669`
-- ❌ 상위 카테고리가 아닌 **가장 하위(leaf) 카테고리**를 선택하세요
+### 출력 파일
+- 기본 결과 폴더: `{llm_result_rel}/`
+- 파일명 규칙: 입력 파일명 기준으로 `_category_match_{version_slug}.xlsx`를 붙입니다.
+  - 예: `상품전처리GPT_v3_0_20260427_124037.xlsx` → `{llm_result_rel}/상품전처리GPT_v3_0_20260427_124037_category_match_{version_slug}.xlsx`
+  - 예: `chunk_01_20260427.xlsx` → `{llm_result_rel}/chunk_01_20260427_category_match_{version_slug}.xlsx`
+- 이 카테고리 파일은 키워드 결과 엑셀과 별도 파일입니다. 키워드 결과 파일을 덮어쓰지 마세요.
 
-### 쿠팡 카테고리 (`coupang_category_tree.txt`)
-- 파일이 있는 경우에만 처리
-- 형식: 네이버와 동일 (`카테고리ID\t전체경로`)
-- `쿠팡카테고리코드` 열을 추가하세요
+### 카테고리 기준표 위치
+우선순위대로 사용하세요.
+1. `category_reference/` 폴더의 CSV 파일
+2. 같은 폴더의 CSV 파일
+3. 기존 호환 파일 `naver_category_tree.txt`, `coupang_category_tree.txt`
 
-### 카테고리 매칭 원칙
-1. **상품의 실제 용도/기능**을 기준으로 선택 (이름만 보지 말고 OCR 텍스트도 참고)
-2. **가장 구체적인 하위 카테고리** 선택 (예: `공구` 보다 `전기용품`)
-3. 애매할 때는 **가장 많이 팔릴 것 같은 카테고리** 선택
-4. A마켓과 B마켓은 **같은 카테고리코드** 사용
+사용 가능한 기준표:
+- `category_reference/naver_categories.csv`
+- `category_reference/coupang_categories.csv`
+- `category_reference/11st_categories.csv`
+- `category_reference/lotteon_categories.csv`
+- `category_reference/lotteon_standard_categories.csv`
+- `category_reference/lotteon_display_categories.csv`
+- `category_reference/auction_categories.csv`
+- `category_reference/esm_auction_gmarket_category_matching.csv`
+
+### 카테고리 매칭 파일 컬럼
+카테고리 매칭 엑셀에는 최소 아래 컬럼을 포함하세요.
+- `상품코드`
+- `상품명`
+- `네이버카테고리코드`
+- `네이버카테고리경로`
+- `쿠팡카테고리코드`
+- `쿠팡카테고리경로`
+- `11번가카테고리코드`
+- `11번가카테고리경로`
+- `롯데ON표준카테고리코드`
+- `롯데ON표준카테고리경로`
+- `롯데ON전시카테고리코드`
+- `롯데ON전시카테고리경로`
+- `옥션카테고리코드`
+- `옥션카테고리경로`
+- `G마켓카테고리경로`
+- `ESM카테고리경로`
+- `확신도`
+- `검수필요`
+- `매칭근거`
+
+### 결과 엑셀에도 직접 쓸 컬럼
+키워드 결과 엑셀의 `분리추출후` 시트와 `B마켓` 시트에는 업로드에서 바로 쓰는 아래 컬럼도 추가/갱신하세요.
+- `네이버카테고리코드`
+- `쿠팡카테고리코드`
+
+다른 마켓(11번가/롯데ON/옥션/ESM)은 우선 별도 카테고리 매칭 파일에만 기록합니다.
+
+### 매칭 기준
+1. **외부 검색 금지**: 상품명, OCR텍스트, 생성한 키워드, 제공된 카테고리 기준표만 사용하세요.
+2. **상품의 실제 정체성 기준**: 제목에 들어간 마케팅 단어보다 핵심 상품 유형/기능/용도를 우선합니다.
+3. **가장 구체적인 leaf 카테고리**를 선택하세요. 상위 카테고리로 뭉뚱그리지 마세요.
+4. A마켓과 B마켓은 같은 상품이므로 같은 카테고리 매칭값을 사용하세요.
+5. 확신도가 낮으면 `검수필요`를 `Y`로 표시하고 `매칭근거`에 애매한 이유를 적으세요.
+6. 롯데ON은 `category_type=standard` 행에서 표준카테고리, `category_type=display` 행에서 전시카테고리를 각각 고르세요.
+7. ESM 매칭표는 `사이트=G마켓` 행의 `G/A 카테고리명`을 `G마켓카테고리경로`에 기록하고, 원본 `ESM 카테고리명`은 `ESM카테고리경로`에 함께 기록하세요.
 """
 
     with open(md_path, "w", encoding="utf-8") as f:
@@ -821,6 +927,7 @@ OCR결과 시트의 텍스트를 반드시 참고하여 상품의 실제 특성(
 
     _status(status_cb, f"keyword_skill.md 생성: {md_path}")
     _status(status_cb, f"LLM 결과 저장 폴더: {llm_result_dir}")
+    _copy_market_category_references(export_root, status_cb)
 
     import shutil
     _services_dir = os.path.dirname(os.path.abspath(__file__))
@@ -836,6 +943,7 @@ OCR결과 시트의 텍스트를 반드시 참고하여 상품의 실제 특성(
         _split_upload_excel(upload_path, export_root, chunk_size, date_tag, status_cb, llm_chunks_dir=chunks_dir)
         if os.path.isdir(chunks_dir):
             shutil.copy2(md_path, os.path.join(chunks_dir, "keyword_skill.md"))
+            _copy_market_category_references(chunks_dir, status_cb)
             for cat_file in ("naver_category_tree.txt", "coupang_category_tree.txt"):
                 src = os.path.join(_services_dir, cat_file)
                 if os.path.isfile(src):

@@ -9,6 +9,7 @@ MarketPlus local helper server v3.
 from __future__ import annotations
 
 import base64
+import csv
 import difflib
 import json
 import os
@@ -29,7 +30,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STORE_PATH = os.path.join(BASE_DIR, "marketplus_category_map_store.json")
 HELPER_JS_PATH = os.path.join(BASE_DIR, "marketplus-category-helper.user.js")
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
-HELPER_FEATURE_VERSION = 2
+HELPER_FEATURE_VERSION = 4
+_ESM_MARKET_ROWS: list[dict[str, str]] | None = None
 
 XML_NS = {
     "a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
@@ -168,6 +170,134 @@ def rows_to_dicts(rows: list[list[str]]) -> list[dict[str, str]]:
     return result
 
 
+def normalize_header_key(value: str) -> str:
+    return re.sub(r"[^0-9a-z가-힣]+", "", str(value or "").lower())
+
+
+def normalize_category_key(value: str) -> str:
+    return re.sub(r"[^0-9a-z가-힣]+", "", str(value or "").lower())
+
+
+def category_segments(value: str) -> list[str]:
+    return [x.strip() for x in re.split(r"\s*>\s*", str(value or "")) if x.strip()]
+
+
+def find_esm_category_matching_csv() -> str:
+    candidates = []
+    env_dir = os.environ.get("MARKET_CATEGORY_PROCESSED_DIR") or os.environ.get("MARKET_CATEGORY_DATA_DIR")
+    if env_dir:
+        candidates.append(os.path.join(env_dir, "esm_auction_gmarket_category_matching.csv"))
+
+    repo_root = os.path.abspath(os.path.join(BASE_DIR, "..", ".."))
+    parent_project_dir = os.path.dirname(repo_root)
+    candidates.append(os.path.join(parent_project_dir, "market-category-matcher", "data", "processed", "esm_auction_gmarket_category_matching.csv"))
+
+    user_profile = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+    candidates.append(os.path.join(user_profile, "Desktop", "프로젝트", "market-category-matcher", "data", "processed", "esm_auction_gmarket_category_matching.csv"))
+
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+def load_esm_market_rows() -> list[dict[str, str]]:
+    global _ESM_MARKET_ROWS
+    if _ESM_MARKET_ROWS is not None:
+        return _ESM_MARKET_ROWS
+
+    path = find_esm_category_matching_csv()
+    rows: list[dict[str, str]] = []
+    if path:
+        try:
+            with open(path, "r", encoding="utf-8-sig", newline="") as f:
+                for row in csv.DictReader(f):
+                    rows.append({
+                        "esm": row.get("ESM 카테고리명", "").strip(),
+                        "site": row.get("사이트", "").strip(),
+                        "market": row.get("G/A 카테고리명", "").strip(),
+                    })
+        except Exception:
+            rows = []
+
+    _ESM_MARKET_ROWS = rows
+    return rows
+
+
+def translate_esm_category_path(esm_path: str, site: str) -> str:
+    esm_path = str(esm_path or "").strip()
+    if not esm_path:
+        return ""
+
+    site_key = normalize_category_key(site)
+    query_key = normalize_category_key(esm_path)
+    query_segments = [normalize_category_key(x) for x in category_segments(esm_path)]
+    query_segments = [x for x in query_segments if x]
+    query_leaf = query_segments[-1] if query_segments else ""
+
+    best = ""
+    best_score = 0
+    for row in load_esm_market_rows():
+        if normalize_category_key(row.get("site", "")) != site_key:
+            continue
+        candidate_esm = row.get("esm", "")
+        candidate_market = row.get("market", "")
+        if not candidate_market:
+            continue
+
+        candidate_key = normalize_category_key(candidate_esm)
+        candidate_segments = [normalize_category_key(x) for x in category_segments(candidate_esm)]
+        candidate_segments = [x for x in candidate_segments if x]
+        candidate_leaf = candidate_segments[-1] if candidate_segments else ""
+
+        score = 0
+        if candidate_key == query_key:
+            score = 100
+        elif query_key and (query_key in candidate_key or candidate_key in query_key):
+            score = 80
+        elif query_leaf and query_leaf == candidate_leaf:
+            score = 50 + sum(8 for seg in query_segments[:-1] if seg and seg in candidate_key)
+
+        if score > best_score:
+            best = candidate_market
+            best_score = score
+
+    return best if best_score >= 50 else ""
+
+
+def row_value(row: dict[str, str], *names: str) -> str:
+    for name in names:
+        value = row.get(name, "")
+        if str(value or "").strip():
+            return str(value or "").strip()
+
+    normalized = {normalize_header_key(k): v for k, v in row.items()}
+    for name in names:
+        value = normalized.get(normalize_header_key(name), "")
+        if str(value or "").strip():
+            return str(value or "").strip()
+    return ""
+
+
+def normalize_market_key(value: str) -> str:
+    compact = re.sub(r"[\s_\-]+", "", str(value or "").lower())
+    if "auction" in compact or "옥션" in compact:
+        return "auction"
+    if "coupang" in compact or "쿠팡" in compact:
+        return "coupang"
+    if "gmarket" in compact or "g마켓" in compact or "g마" in compact or "지마켓" in compact:
+        return "gmarket"
+    if "11st" in compact or "11번" in compact or "십일번" in compact:
+        return "11st"
+    if "smart" in compact or "naver" in compact or "ncp" in compact or "스마트" in compact or "네이버" in compact:
+        return "naver"
+    if "lotte" in compact or "롯데" in compact:
+        return "lotteon"
+    if "esm" in compact:
+        return "esm"
+    return compact
+
+
 def make_record(
     row: dict[str, str],
     market: str,
@@ -186,7 +316,7 @@ def make_record(
         "gsCode": gs_code,
         "sku": sku,
         "productName": product_name,
-        "market": market,
+        "market": normalize_market_key(market),
         "categoryCode": str(category_code or "").strip(),
         "categoryPath": str(category_path or "").strip(),
         "selectorJson": str(selector_json or "").strip(),
@@ -223,25 +353,42 @@ def parse_category_workbook(blob: bytes, filename: str) -> dict:
                     wide_rows = candidate_rows
                     break
         for row in wide_rows:
-            lotte_code = row.get("롯데ON전시카테고리코드", "") or row.get("롯데ON표준카테고리코드", "")
-            lotte_path = row.get("롯데ON전시카테고리경로", "") or row.get("롯데ON표준카테고리경로", "")
+            lotte_code = row_value(
+                row,
+                "롯데ON전시카테고리코드", "롯데온전시카테고리코드",
+                "롯데ON카테고리코드", "롯데온카테고리코드",
+                "롯데ON표준카테고리코드", "롯데온표준카테고리코드",
+            )
+            lotte_path = row_value(
+                row,
+                "롯데ON전시카테고리경로", "롯데온전시카테고리경로",
+                "롯데ON카테고리경로", "롯데온카테고리경로",
+                "롯데ON표준카테고리경로", "롯데온표준카테고리경로",
+            )
             mappings = [
-                ("naver", "네이버카테고리코드", "네이버카테고리경로", ""),
-                ("coupang", "쿠팡카테고리코드", "쿠팡카테고리경로", ""),
-                ("auction", "옥션카테고리코드", "옥션카테고리경로", "옥션드롭다운값"),
-                ("11st", "11번가카테고리코드", "11번가카테고리경로", ""),
-                ("smartstore", "스마트스토어카테고리코드", "스마트스토어카테고리경로", "스마트스토어드롭다운값"),
+                ("naver", ["네이버카테고리코드", "네이버카테고리ID", "스마트스토어카테고리코드"], ["네이버카테고리경로", "네이버카테고리명", "스마트스토어카테고리경로"], ["스마트스토어드롭다운값"]),
+                ("coupang", ["쿠팡카테고리코드", "쿠팡카테고리ID"], ["쿠팡카테고리경로", "쿠팡카테고리명"], []),
+                ("auction", ["옥션카테고리코드", "옥션카테고리ID"], ["옥션카테고리경로", "옥션카테고리명"], ["옥션드롭다운값"]),
+                ("11st", ["11번가카테고리코드", "11번가카테고리ID"], ["11번가카테고리경로", "11번가카테고리명"], []),
             ]
-            for market, code_col, path_col, selector_col in mappings:
-                code = row.get(code_col, "") if code_col else ""
-                path = row.get(path_col, "")
-                selector = row.get(selector_col, "") if selector_col else ""
+            for market, code_cols, path_cols, selector_cols in mappings:
+                code = row_value(row, *code_cols)
+                path = row_value(row, *path_cols)
+                selector = row_value(row, *selector_cols) if selector_cols else ""
                 if code or path or selector:
                     records.append(make_record(row, market, code, path, selector))
-            gmarket_path = row.get("G마켓카테고리경로", "") or row.get("ESM카테고리경로", "")
-            gmarket_selector = row.get("G마켓드롭다운값", "")
-            if gmarket_path or gmarket_selector:
-                records.append(make_record(row, "gmarket", "", gmarket_path, gmarket_selector))
+            gmarket_code = row_value(row, "G마켓카테고리코드", "지마켓카테고리코드")
+            explicit_gmarket_path = row_value(
+                row,
+                "G마켓카테고리경로", "G마켓카테고리명",
+                "지마켓카테고리경로", "지마켓카테고리명",
+                "옥션/G마켓카테고리경로", "옥션G마켓카테고리경로", "G마켓/옥션카테고리경로",
+            )
+            esm_path = row_value(row, "ESM카테고리경로", "ESM카테고리명", "ESM 카테고리명", "ESM 카테고리 경로")
+            gmarket_path = explicit_gmarket_path or translate_esm_category_path(esm_path, "G마켓") or esm_path
+            gmarket_selector = row_value(row, "G마켓드롭다운값", "지마켓드롭다운값", "ESM드롭다운값")
+            if gmarket_code or gmarket_path or gmarket_selector:
+                records.append(make_record(row, "gmarket", gmarket_code, gmarket_path, gmarket_selector))
             if lotte_code or lotte_path:
                 records.append(make_record(row, "lotteon", lotte_code, lotte_path, ""))
 
@@ -388,16 +535,37 @@ def lookup_category_map(product_name: str, product_code: str = "") -> dict:
         if group_key:
             groups.setdefault(group_key, []).append(record)
 
+    candidates = []
     best_key = ""
     best_score = 0.0
     for group_key, group_records in groups.items():
         score = product_match_score(group_records, product_name, product_code)
+        first = group_records[0]
+        candidates.append({
+            "productKey": first.get("productKey", ""),
+            "gsCode": first.get("gsCode", ""),
+            "sku": first.get("sku", ""),
+            "productName": first.get("productName", ""),
+            "score": round(score, 4),
+        })
         if score > best_score:
             best_key = group_key
             best_score = score
 
     if not best_key or best_score < 0.58:
-        return {"matched": False, "score": round(best_score, 4), "error": "no matching product"}
+        candidates = sorted(candidates, key=lambda item: item["score"], reverse=True)[:5]
+        return {
+            "matched": False,
+            "score": round(best_score, 4),
+            "error": "no matching product",
+            "candidates": candidates,
+            "source": {
+                "filename": store.get("filename", ""),
+                "uploadedAt": store.get("uploadedAt", ""),
+                "recordCount": store.get("recordCount", 0),
+                "productCount": store.get("productCount", 0),
+            },
+        }
 
     group_records = groups[best_key]
     markets = {}
@@ -433,6 +601,74 @@ def lookup_category_map(product_name: str, product_code: str = "") -> dict:
             "recordCount": store.get("recordCount", 0),
             "productCount": store.get("productCount", 0),
         },
+    }
+
+
+def add_category_alias(product_name: str, product_code: str, source_product_key: str = "", source_product_name: str = "") -> dict:
+    store = load_store()
+    records = store.get("records") or []
+    if not records:
+        return {"ok": False, "error": "category map not uploaded"}
+
+    alias_name = str(product_name or "").strip()
+    if not alias_name:
+        return {"ok": False, "error": "productName required"}
+
+    source_code_key = normalize_code_key(source_product_key)
+    source_name_key = normalize_key(source_product_name)
+    source_records = []
+    for record in records:
+        code_keys = {
+            record.get("_productKeyKey", ""),
+            record.get("_gsCodeKey", ""),
+            record.get("_skuKey", ""),
+        }
+        if source_code_key and source_code_key in code_keys:
+            source_records.append(record)
+        elif source_name_key and source_name_key == record.get("_productNameKey", ""):
+            source_records.append(record)
+
+    if not source_records:
+        return {"ok": False, "error": "source product not found"}
+
+    alias_name_key = normalize_key(alias_name)
+    alias_code_key = normalize_code_key(product_code)
+    seen = {
+        (
+            str(r.get("market", "")).lower(),
+            r.get("_productNameKey", ""),
+            r.get("_skuKey", ""),
+        )
+        for r in records
+    }
+
+    added = 0
+    for record in list(source_records):
+        key = (str(record.get("market", "")).lower(), alias_name_key, alias_code_key)
+        if key in seen:
+            continue
+        cloned = dict(record)
+        cloned["productName"] = alias_name
+        if product_code:
+            cloned["sku"] = product_code
+        refresh_record_keys(cloned)
+        records.append(cloned)
+        seen.add(key)
+        added += 1
+
+    store["records"] = records
+    store["recordCount"] = len(records)
+    store["aliasCount"] = int(store.get("aliasCount") or 0) + added
+    save_store(store)
+    return {
+        "ok": True,
+        "added": added,
+        "recordCount": store["recordCount"],
+        "aliasCount": store["aliasCount"],
+        "sourceProductKey": source_product_key,
+        "sourceProductName": source_records[0].get("productName", ""),
+        "productName": alias_name,
+        "productCode": product_code,
     }
 
 
@@ -557,7 +793,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path != "/api/upload-map":
+        if parsed.path not in {"/api/upload-map", "/api/category-alias"}:
             self.send_error(404)
             return
 
@@ -569,6 +805,16 @@ class Handler(BaseHTTPRequestHandler):
 
             body = self.rfile.read(length)
             payload = json.loads(body.decode("utf-8"))
+
+            if parsed.path == "/api/category-alias":
+                self.respond(add_category_alias(
+                    payload.get("productName", ""),
+                    payload.get("productCode", ""),
+                    payload.get("sourceProductKey", ""),
+                    payload.get("sourceProductName", ""),
+                ))
+                return
+
             filename = payload.get("filename") or "category_map.xlsx"
             content_b64 = payload.get("contentBase64") or ""
             blob = base64.b64decode(content_b64)

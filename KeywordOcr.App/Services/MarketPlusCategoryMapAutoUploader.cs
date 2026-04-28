@@ -16,6 +16,7 @@ namespace KeywordOcr.App.Services;
 public sealed class MarketPlusCategoryMapAutoUploader
 {
     private const string HelperBaseUrl = "http://127.0.0.1:5555";
+    private const int RequiredHelperVersion = 4;
     private static readonly Regex GsCodeRegex = new(@"(GS\d{7}[A-Z0-9]*)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(8) };
 
@@ -99,8 +100,14 @@ public sealed class MarketPlusCategoryMapAutoUploader
 
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
             using var doc = JsonDocument.Parse(body);
-            return doc.RootElement.TryGetProperty("supportsAliases", out var aliasesElement)
+            var supportsAliases = doc.RootElement.TryGetProperty("supportsAliases", out var aliasesElement)
                 && aliasesElement.ValueKind == JsonValueKind.True;
+            var helperVersion = doc.RootElement.TryGetProperty("helperVersion", out var versionElement)
+                && versionElement.TryGetInt32(out var version)
+                    ? version
+                    : 0;
+
+            return supportsAliases && helperVersion >= RequiredHelperVersion;
         }
         catch
         {

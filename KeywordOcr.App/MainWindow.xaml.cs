@@ -1279,9 +1279,10 @@ public partial class MainWindow : Window
             : $"{resultDir}/{Path.GetFileNameWithoutExtension(inputFileName)}_{outputStem}.xlsx";
 
         return $"키워드 저장 후 상품코드/상품명 기준 마켓별 카테고리 매칭 파일도 `{outputFile}`로 추가 생성해. " +
-               "카테고리 기준표는 `category_reference/` 또는 같은 폴더의 `*_categories.csv`, `esm_auction_gmarket_category_matching.csv`를 우선 사용해. " +
+               "카테고리 기준표는 `category_reference/` 또는 같은 폴더의 `*_categories.csv`, `lotteon_standard_categories.csv`, `lotteon_display_categories.csv`, `esm_auction_gmarket_category_matching.csv`를 우선 사용해. " +
                "포함 열: 상품코드, 상품명, 네이버카테고리코드/경로, 쿠팡카테고리코드/경로, 11번가카테고리코드/경로, " +
-               "롯데ON표준카테고리코드/경로, 롯데ON전시카테고리코드/경로, 옥션카테고리코드/경로, ESM카테고리경로, 확신도, 검수필요, 매칭근거. " +
+               "롯데ON표준카테고리코드/경로, 롯데ON전시카테고리코드/경로, 옥션카테고리코드/경로, G마켓카테고리경로, ESM카테고리경로, 확신도, 검수필요, 매칭근거. " +
+               "ESM 매칭표는 사이트=G마켓 행의 G/A 카테고리명을 G마켓카테고리경로로 기록해. " +
                "외부 검색 없이 상품명/OCR/생성 키워드와 제공된 카테고리표만 근거로 해.";
     }
 

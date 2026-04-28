@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Stop'
 
 $BaseDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProxyPath = Join-Path $BaseDir 'naver_category_proxy.py'
+$RequiredHelperVersion = 4
 
 function Write-Step([string]$Message) {
     Write-Host "[MarketPlus] $Message"
@@ -14,7 +15,13 @@ function Write-Step([string]$Message) {
 function Test-HelperServer {
     try {
         $response = Invoke-RestMethod -Uri 'http://127.0.0.1:5555/api/map/status' -TimeoutSec 1
-        return ($null -ne $response -and $response.PSObject.Properties.Name -contains 'uploaded')
+        if ($null -eq $response -or -not ($response.PSObject.Properties.Name -contains 'uploaded')) {
+            return $false
+        }
+        if (-not ($response.PSObject.Properties.Name -contains 'helperVersion')) {
+            return $false
+        }
+        return ([int]$response.helperVersion -ge $RequiredHelperVersion)
     } catch {
         return $false
     }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MarketPlus Category Helper
 // @namespace    cafe24-marketplus-helper
-// @version      4.4
+// @version      4.13
 // @description  마켓플러스 카테고리 네이버연동 자동매칭
 // @match        *://mp.cafe24.com/*registerall*
 // @match        *://*.cafe24.com/mp/product/front/registerall*
@@ -16,6 +16,8 @@
     var PROXY_URL = 'http://localhost:5555';
     var naverContext = null; // 네이버 카테고리 맥락 저장
     var categoryMapAutoApplied = false;
+    var pendingAliasCandidate = null;
+    var nearAliasInProgress = false;
 
     function sleep(ms) {
         return new Promise(function (resolve) { setTimeout(resolve, ms); });
@@ -69,6 +71,60 @@
             return await resp.json();
         } catch (e) {
             return { matched: false, error: 'category map server not running' };
+        }
+    }
+
+    function clearAliasCandidate() {
+        pendingAliasCandidate = null;
+    }
+
+    function getNearMatchEnabled() {
+        var el = document.getElementById('mph-near-match-enabled');
+        return !!(el && el.checked);
+    }
+
+    function showAliasCandidate(product, result) {
+        var candidates = result && result.candidates ? result.candidates : [];
+        var candidate = candidates.length ? candidates[0] : null;
+        if (!candidate || !candidate.productName || candidate.score < 0.30) {
+            clearAliasCandidate();
+            return '';
+        }
+        pendingAliasCandidate = { product: product, candidate: candidate };
+        return ' / 근접 후보: ' + shortText(candidate.productName, 34) + ' (' + candidate.score + ')';
+    }
+
+    async function applyPendingAliasCandidate() {
+        if (!pendingAliasCandidate) {
+            setStatus('map', '연결할 근접 후보가 없습니다.');
+            return;
+        }
+        var product = pendingAliasCandidate.product;
+        var candidate = pendingAliasCandidate.candidate;
+        setStatus('map', '근접 후보를 현재 상품명에 연결 중...');
+        try {
+            var resp = await fetch(PROXY_URL + '/api/category-alias', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    productName: product.name || '',
+                    productCode: product.code || '',
+                    sourceProductKey: candidate.productKey || candidate.gsCode || candidate.sku || '',
+                    sourceProductName: candidate.productName || ''
+                })
+            });
+            var data = await resp.json();
+            if (!data.ok) {
+                setStatus('map', '후보 연결 실패: ' + (data.error || 'unknown error'));
+                return;
+            }
+            clearAliasCandidate();
+            categoryMapAutoApplied = false;
+            setStatus('map', '후보 연결 완료: 별칭 ' + data.added + '개. 다시 적용합니다.');
+            await sleep(300);
+            applyCategoryMap(false);
+        } catch (e) {
+            setStatus('map', '후보 연결 실패: ' + e.message);
         }
     }
 
@@ -139,6 +195,90 @@
         return c;
     }
 
+    function shortText(value, maxLen) {
+        var s = String(value || '').replace(/\s+/g, ' ').trim();
+        if (!maxLen || s.length <= maxLen) return s;
+        return s.substring(0, maxLen - 3) + '...';
+    }
+
+    function collectHiddenProducts(root) {
+        var list = [];
+        if (!root || !root.querySelectorAll) return list;
+        var inputs = root.querySelectorAll('input[type="hidden"]');
+        for (var i = 0; i < inputs.length; i++) {
+            var input = inputs[i];
+            if (!input.name || input.name.indexOf('product_name') < 0 || !input.value) continue;
+            var code = '';
+            var m = input.name.match(/prd_info\[([^\]]+)\]\[product_name\]/);
+            if (m) code = m[1];
+            list.push((code || '-') + ': ' + shortText(input.value, 60));
+        }
+        return list;
+    }
+
+    function currentPathForMarketKey(mk) {
+        var idKey = marketIdKey(mk);
+        var parts = [];
+        for (var d = 1; d <= 7; d++) {
+            var sel = document.getElementById('eMarketCategory' + d + '_' + idKey);
+            if (!sel || !sel.value) continue;
+            var opt = sel.options[sel.selectedIndex];
+            parts.push(opt ? opt.text : sel.value);
+        }
+        return parts.join(' > ');
+    }
+
+    function collectCategoryMapDiagnostics() {
+        var products = getProductInfos();
+        var containers = Array.prototype.slice.call(getMarketContainers());
+        var lines = [];
+        lines.push('Category Helper v11 diagnostics');
+        lines.push('url=' + location.href);
+        lines.push('products=' + products.length);
+        for (var p = 0; p < products.length; p++) {
+            lines.push('P' + (p + 1) + ' code=' + (products[p].code || '-') + ' name=' + shortText(products[p].name, 90));
+        }
+        lines.push('marketContainers=' + containers.length);
+        for (var i = 0; i < containers.length; i++) {
+            var td = containers[i];
+            var mk = td.getAttribute('data-marketkey') || '';
+            var row = td.closest ? td.closest('tr') : null;
+            var form = td.closest ? td.closest('form') : null;
+            var table = td.closest ? td.closest('table') : null;
+            var selects = td.querySelectorAll ? td.querySelectorAll('select') : [];
+            var links = td.querySelectorAll ? Array.prototype.slice.call(td.querySelectorAll('a.txtLink,a')).map(function (a) {
+                return shortText(a.textContent, 70);
+            }).filter(Boolean).slice(0, 3).join(' | ') : '';
+            lines.push('#' + (i + 1) + ' alias=' + getMarketAliasForContainer(td) + ' mk=' + mk);
+            lines.push('  rowIndex=' + (row ? row.rowIndex : '-') + ' tableId=' + (table ? (table.id || table.className || '-') : '-') + ' selectCount=' + selects.length);
+            lines.push('  rowProducts=' + (collectHiddenProducts(row).join(' || ') || '-'));
+            lines.push('  formProducts=' + (collectHiddenProducts(form).slice(0, 5).join(' || ') || '-'));
+            lines.push('  current=' + (mk ? currentPathForMarketKey(mk) : '-'));
+            lines.push('  links=' + (links || '-'));
+            lines.push('  rowText=' + shortText(row ? row.textContent : td.textContent, 180));
+        }
+        return lines.join('\n');
+    }
+
+    async function copyCategoryMapDiagnostics() {
+        var text = collectCategoryMapDiagnostics();
+        var resultEl = document.getElementById('mph-map-diagnostics');
+        if (resultEl) {
+            resultEl.style.display = 'block';
+            resultEl.textContent = text;
+        }
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(text);
+                setStatus('map', '진단 내용을 클립보드에 복사했습니다.');
+                return;
+            }
+        } catch (e) {
+            // 클립보드 권한이 막히면 화면에 표시된 진단 내용을 사용한다.
+        }
+        setStatus('map', '진단 내용을 아래에 표시했습니다. 복사가 막히면 화면 내용을 보내주세요.');
+    }
+
     function marketIdKey(k) { return k.replace(/\|/g, '_'); }
 
     function isMarketMatched(mk) {
@@ -156,6 +296,18 @@
     }
 
     function getTotalMarketCount() { return getMarketContainers().length; }
+
+    function getSingleProductGuardMessage(products, actionLabel) {
+        if (!products || products.length === 0) return '상품명을 찾을 수 없습니다';
+        if (products.length !== 1) {
+            return '안전 차단: 선택 상품 ' + products.length + '개. ' + actionLabel + '은 단일 상품 화면에서만 실행합니다.';
+        }
+        var containerCount = getMarketContainers().length;
+        if (containerCount > 12) {
+            return '안전 차단: 카테고리 영역 ' + containerCount + '개. 여러 상품이 섞인 화면일 수 있어 ' + actionLabel + '은 단일 상품 화면에서만 실행합니다. 진단 복사로 확인하세요.';
+        }
+        return '';
+    }
 
     // ─── 맥락 기반 카테고리 스코어링 ───
     function scoreCategoryMatch(categoryText, productName) {
@@ -268,10 +420,14 @@
 
     // ─── 자동 매칭 (네이버 카테고리 계층 → 다중 키워드) ───
     async function runAutoMatch() {
-        var names = getProductNames();
-        if (names.length === 0) { setStatus('match', '상품명을 찾을 수 없습니다'); return; }
+        var products = getProductInfos();
+        var guardMessage = getSingleProductGuardMessage(products, '자동 매칭');
+        if (guardMessage) {
+            setStatus('match', guardMessage);
+            return;
+        }
 
-        var productName = names[0];
+        var productName = products[0].name;
         var totalMarkets = getTotalMarketCount();
         var matchBtn = document.getElementById('mph-auto-match');
         matchBtn.disabled = true;
@@ -436,21 +592,27 @@
 
     function normalizeMarketName(raw) {
         var s = String(raw || '').toLowerCase();
-        if (s.indexOf('auction') >= 0 || s.indexOf('옥션') >= 0) return 'auction';
-        if (s.indexOf('coupang') >= 0 || s.indexOf('쿠팡') >= 0) return 'coupang';
-        if (s.indexOf('gmarket') >= 0 || s.indexOf('g마켓') >= 0 || s.indexOf('g마') >= 0) return 'gmarket';
-        if (s.indexOf('11st') >= 0 || s.indexOf('11번') >= 0) return '11st';
-        if (s.indexOf('smart') >= 0 || s.indexOf('naver') >= 0 || s.indexOf('ncp') >= 0 || s.indexOf('스마트') >= 0) return 'naver';
-        if (s.indexOf('lotte') >= 0 || s.indexOf('롯데') >= 0) return 'lotteon';
+        var compact = s.replace(/[\s_\-]+/g, '');
+        if (compact.indexOf('auction') >= 0 || compact.indexOf('옥션') >= 0) return 'auction';
+        if (compact.indexOf('coupang') >= 0 || compact.indexOf('쿠팡') >= 0) return 'coupang';
+        if (compact.indexOf('gmarket') >= 0 || compact.indexOf('g마켓') >= 0 || compact.indexOf('g마') >= 0 || compact.indexOf('지마켓') >= 0) return 'gmarket';
+        if (compact.indexOf('11st') >= 0 || compact.indexOf('11번') >= 0 || compact.indexOf('십일번') >= 0) return '11st';
+        if (compact.indexOf('smart') >= 0 || compact.indexOf('naver') >= 0 || compact.indexOf('ncp') >= 0 || compact.indexOf('스마트') >= 0 || compact.indexOf('네이버') >= 0) return 'naver';
+        if (compact.indexOf('lotte') >= 0 || compact.indexOf('롯데') >= 0) return 'lotteon';
         if (s.indexOf('kakao') >= 0 || s.indexOf('카카오') >= 0) return 'kakao';
-        return s.split('|')[0];
+        return '';
     }
 
     function getMarketAliasForContainer(td) {
         var mk = td.getAttribute('data-marketkey') || '';
         var direct = normalizeMarketName(mk.split('|')[0]);
         if (direct) return direct;
-        return normalizeMarketName(td.textContent || '');
+        var textAlias = normalizeMarketName(td.textContent || '');
+        if (textAlias) return textAlias;
+        var row = td.closest ? td.closest('tr') : null;
+        var rowAlias = normalizeMarketName(row ? row.textContent || '' : '');
+        if (rowAlias) return rowAlias;
+        return String(mk || '').split('|')[0].toLowerCase();
     }
 
     function getMappedMarket(markets, alias) {
@@ -459,6 +621,7 @@
         if (alias === 'naver' && markets.smartstore) return markets.smartstore;
         if (alias === 'smartstore' && markets.naver) return markets.naver;
         if (alias === '11st' && markets['11번가']) return markets['11번가'];
+        if (alias === 'gmarket' && markets.esm) return markets.esm;
         return null;
     }
 
@@ -469,7 +632,15 @@
     }
 
     function getCategorySegments(path) {
-        return String(path || '').split(/[>\/]+/).map(function (x) { return x.trim(); }).filter(Boolean);
+        var value = String(path || '');
+        var delimiter = value.indexOf('>') >= 0 ? '>' : '/';
+        return value.split(delimiter).map(cleanCategorySegment).filter(Boolean);
+    }
+
+    function cleanCategorySegment(value) {
+        return String(value || '')
+            .replace(/^\s*[\(\[（]?\s*구\s*[\)\]）]?\s*/g, '')
+            .trim();
     }
 
     function getCategorySearchKeyword(path) {
@@ -478,8 +649,29 @@
         return segments[segments.length - 1];
     }
 
+    function getCategorySearchKeywords(path) {
+        var segments = getCategorySegments(path);
+        var keywords = [];
+        var seen = {};
+        function add(value) {
+            value = String(value || '').trim();
+            if (!value || seen[value]) return;
+            seen[value] = true;
+            keywords.push(value);
+        }
+
+        if (segments.length === 0) return keywords;
+        var leaf = segments[segments.length - 1];
+        var parent = segments.length >= 2 ? segments[segments.length - 2] : '';
+        add(leaf);
+        if (parent && leaf) add(parent + ' ' + leaf);
+        if (parent) add(parent);
+        for (var i = segments.length - 3; i >= 0; i--) add(segments[i]);
+        return keywords;
+    }
+
     function normalizeCategoryText(value) {
-        return String(value || '').toLowerCase().replace(/\s+/g, '').replace(/[>\/|,-]/g, '');
+        return cleanCategorySegment(value).toLowerCase().replace(/[^0-9a-z가-힣]+/g, '');
     }
 
     function scoreMappedCategoryLink(linkText, categoryPath) {
@@ -499,29 +691,155 @@
     }
 
     function clickBestMappedLink(td, categoryPath) {
-        var links = td.querySelectorAll('a.txtLink');
+        var links = td.querySelectorAll('a.txtLink, a, button, [role="button"], [onclick], .txtLink');
         var bestLink = null;
         var bestScore = 0;
         for (var i = 0; i < links.length; i++) {
-            var score = scoreMappedCategoryLink(links[i].textContent || '', categoryPath);
+            var text = links[i].textContent || '';
+            if (!text || text.trim().length < 2) continue;
+            var score = scoreMappedCategoryLink(text, categoryPath);
             if (score > bestScore) {
                 bestScore = score;
                 bestLink = links[i];
             }
         }
         if (bestLink && bestScore >= 8) {
+            bestLink.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+            bestLink.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
             bestLink.click();
             return bestLink.textContent.trim();
         }
         return '';
     }
 
+    function waitForSelectableOptions(sel, timeout) {
+        return new Promise(function (resolve) {
+            var start = Date.now();
+            (function check() {
+                var count = 0;
+                for (var i = 0; i < sel.options.length; i++) {
+                    if (sel.options[i].value) count++;
+                }
+                if (count > 0) { resolve(true); return; }
+                if (Date.now() - start > timeout) { resolve(false); return; }
+                setTimeout(check, 150);
+            })();
+        });
+    }
+
+    function findCategoryOptionByText(sel, segment) {
+        var target = normalizeCategoryText(segment);
+        if (!target) return null;
+        var targetTokens = cleanCategorySegment(segment).split(/[>\s\/]+/).map(normalizeCategoryText).filter(function (x) { return x.length >= 2; });
+        var best = null;
+        var bestScore = 0;
+        for (var i = 0; i < sel.options.length; i++) {
+            var opt = sel.options[i];
+            if (!opt.value) continue;
+            var rawText = opt.text || '';
+            var text = normalizeCategoryText(rawText);
+            if (!text || text === '대분류' || text === '선택') continue;
+            var textTokens = cleanCategorySegment(rawText).split(/[>\s\/]+/).map(normalizeCategoryText).filter(function (x) { return x.length >= 2; });
+            var score = 0;
+            if (text === target) score = 100;
+            else if (text.indexOf(target) >= 0 || target.indexOf(text) >= 0) score = 80;
+            else if (target.length >= 3 && text.indexOf(target.slice(-3)) >= 0) score = 40;
+            var overlap = 0;
+            for (var t = 0; t < targetTokens.length; t++) {
+                if (textTokens.indexOf(targetTokens[t]) >= 0 || text.indexOf(targetTokens[t]) >= 0) overlap++;
+            }
+            if (overlap > 0) score = Math.max(score, 60 + overlap * 10);
+            if (score > bestScore) {
+                bestScore = score;
+                best = opt;
+            }
+        }
+        return bestScore >= 70 ? best : null;
+    }
+
+    async function applyCategoryPathByDropdown(mk, categoryPath) {
+        var idKey = marketIdKey(mk);
+        var segments = getCategorySegments(categoryPath);
+        var selected = 0;
+        var segmentIndex = 0;
+        for (var d = 1; d <= Math.min(7, segments.length); d++) {
+            var sel = document.getElementById('eMarketCategory' + d + '_' + idKey);
+            if (!sel) break;
+            await waitForSelectableOptions(sel, 5000);
+            var opt = null;
+            var matchedSegmentIndex = -1;
+            for (var s = segmentIndex; s < segments.length; s++) {
+                opt = findCategoryOptionByText(sel, segments[s]);
+                if (opt) {
+                    matchedSegmentIndex = s;
+                    break;
+                }
+            }
+            if (!opt) break;
+            sel.value = opt.value;
+            sel.dispatchEvent(new Event('input', { bubbles: true }));
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+            selected++;
+            segmentIndex = matchedSegmentIndex + 1;
+            await sleep(650);
+        }
+        return selected > 0 && (segmentIndex >= segments.length || selected >= Math.min(2, segments.length));
+    }
+
+    function getAutoExcludeEnabled() {
+        var el = document.getElementById('mph-auto-exclude-failed');
+        return !el || !!el.checked;
+    }
+
+    function findClickableOnElement(root) {
+        if (!root) return null;
+        var nodes = root.querySelectorAll('input[type="checkbox"], button, a, label, span, div');
+        for (var i = 0; i < nodes.length; i++) {
+            var node = nodes[i];
+            if (node.tagName === 'INPUT' && node.type === 'checkbox') {
+                if (node.checked) return node;
+                continue;
+            }
+            var text = String(node.textContent || '').trim().toUpperCase();
+            if (text === 'ON') {
+                return node.closest('label,button,a,[onclick]') || node;
+            }
+        }
+        return null;
+    }
+
+    function disableMarketForContainer(td) {
+        if (!td) return false;
+        var row = td.closest ? td.closest('tr') : null;
+        if (!row) return false;
+        var cells = Array.prototype.slice.call(row.cells || []);
+        var idx = cells.indexOf(td);
+        var searchRoots = idx > 0 ? cells.slice(0, Math.min(idx, 3)) : cells.slice(0, 3);
+        searchRoots.push(row);
+
+        for (var i = 0; i < searchRoots.length; i++) {
+            var target = findClickableOnElement(searchRoots[i]);
+            if (!target) continue;
+            try {
+                target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                target.click();
+                return true;
+            } catch (e) {
+                return false;
+            }
+        }
+        return false;
+    }
+
     async function applyCategoryMap(auto) {
         if (auto && categoryMapAutoApplied) return;
 
         var products = getProductInfos();
-        if (products.length === 0) {
-            setStatus('map', '상품명을 찾을 수 없습니다');
+        var guardMessage = getSingleProductGuardMessage(products, '카테고리맵');
+        if (guardMessage) {
+            setStatus('map', guardMessage);
+            if (auto) categoryMapAutoApplied = true;
             return;
         }
 
@@ -530,55 +848,92 @@
         var result = await fetchCategoryMap(product);
 
         if (!result.matched) {
-            setStatus('map', '매칭표 없음: ' + (result.error || '상품명 미일치'));
+            var candidateText = showAliasCandidate(product, result);
+            if (candidateText && getNearMatchEnabled() && !nearAliasInProgress) {
+                nearAliasInProgress = true;
+                await applyPendingAliasCandidate();
+                nearAliasInProgress = false;
+                return;
+            }
+            setStatus('map', '매칭표 없음: ' + (result.error || '상품명 미일치') + candidateText);
             return;
         }
+        clearAliasCandidate();
 
         var applied = 0;
         var skipped = 0;
         var pendingSearch = [];
+        var details = [];
+        var failedItems = [];
         var containers = getMarketContainers();
         for (var i = 0; i < containers.length; i++) {
             var td = containers[i];
             var mk = td.getAttribute('data-marketkey');
-            if (!mk || isMarketMatched(mk)) { skipped++; continue; }
+            if (!mk) { skipped++; continue; }
 
             var alias = getMarketAliasForContainer(td);
+            if (alias === 'kakao') continue;
             var info = getMappedMarket(result.markets, alias);
             var depths = info ? parseSelectorJson(info.selectorJson) : null;
-            if (!info) { skipped++; continue; }
+            if (!info) { skipped++; details.push(alias + ': 매칭표 없음'); failedItems.push({ td: td, alias: alias }); continue; }
 
             if (depths) {
                 await applyPresetForMarket(mk, depths);
                 if (isMarketMatched(mk)) applied++;
-                else skipped++;
+                else { skipped++; details.push(alias + ': 프리셋 실패'); failedItems.push({ td: td, alias: alias }); }
             } else if (info.categoryPath) {
-                pendingSearch.push({ td: td, mk: mk, info: info, keyword: getCategorySearchKeyword(info.categoryPath) });
+                pendingSearch.push({ td: td, mk: mk, alias: alias, info: info, keywords: getCategorySearchKeywords(info.categoryPath), keyword: getCategorySearchKeyword(info.categoryPath) });
             } else {
                 skipped++;
+                details.push(alias + ': 경로 없음');
+                failedItems.push({ td: td, alias: alias });
             }
         }
 
         var searched = {};
         for (var p = 0; p < pendingSearch.length; p++) {
             var item = pendingSearch[p];
-            if (!item.keyword) { skipped++; continue; }
-            if (!searched[item.keyword]) {
-                setStatus('map', '매칭표 검색 중: ' + item.keyword);
-                triggerSearchAction(item.keyword);
-                await sleep(2500);
-                searched[item.keyword] = true;
+            var keywords = item.keywords && item.keywords.length ? item.keywords : [item.keyword];
+            if (!keywords.length) { skipped++; continue; }
+            var itemApplied = false;
+
+            for (var q = 0; q < keywords.length; q++) {
+                var keyword = keywords[q];
+                if (!keyword) continue;
+                if (!searched[keyword]) {
+                    setStatus('map', item.alias + ' 매칭표 검색 중: ' + keyword);
+                    triggerSearchAction(keyword);
+                    await sleep(2500);
+                    searched[keyword] = true;
+                }
+                var clicked = clickBestMappedLink(item.td, item.info.categoryPath);
+                if (clicked) { itemApplied = true; break; }
+                var dropdownApplied = await applyCategoryPathByDropdown(item.mk, item.info.categoryPath);
+                if (dropdownApplied) { itemApplied = true; break; }
             }
-            if (isMarketMatched(item.mk)) { skipped++; continue; }
-            var clicked = clickBestMappedLink(item.td, item.info.categoryPath);
-            if (clicked) applied++;
-            else skipped++;
+
+            if (itemApplied) applied++;
+            else {
+                skipped++;
+                details.push(item.alias + ': 적용 실패(' + keywords.slice(0, 3).join('/'));
+                failedItems.push({ td: item.td, alias: item.alias });
+            }
+        }
+
+        var excluded = 0;
+        if (getAutoExcludeEnabled()) {
+            for (var f = 0; f < failedItems.length; f++) {
+                if (disableMarketForContainer(failedItems[f].td)) excluded++;
+                await sleep(120);
+            }
         }
 
         categoryMapAutoApplied = true;
         var note = '';
         if (result.reviewNeeded || Number(result.confidence || 0) < 0.8) note = ' / 검수필요';
-        setStatus('map', '매칭표 적용: ' + applied + '개, 건너뜀 ' + skipped + '개' + note + ' (' + result.productName + ')');
+        var detailText = details.length ? ' / ' + details.slice(0, 4).join(', ') : '';
+        var excludeText = excluded ? ' / 실패 OFF ' + excluded + '개' : '';
+        setStatus('map', '매칭표 적용: ' + applied + '개, 건너뜀 ' + skipped + '개' + excludeText + note + detailText + ' (' + result.productName + ')');
         setTimeout(refreshSummary, 800);
     }
 
@@ -626,7 +981,7 @@
 
         var panel = document.createElement('div'); panel.id = 'mph-panel';
         var header = document.createElement('div'); header.id = 'mph-header';
-        header.innerHTML = '<span id="mph-title">Category Helper v4</span><span id="mph-toggle">▼</span>';
+        header.innerHTML = '<span id="mph-title">Category Helper v13</span><span id="mph-toggle">▼</span>';
         panel.appendChild(header);
 
         var body = document.createElement('div'); body.id = 'mph-body';
@@ -657,8 +1012,12 @@
             '  </div>',
             '  <div id="mph-map-file-name" class="mph-hint">선택된 파일 없음</div>',
             '  <button id="mph-map-apply" class="mph-btn mph-btn-green" style="width:100%;padding:9px;font-size:13px;">업로드 매칭표 적용</button>',
+            '  <label class="mph-check"><input type="checkbox" id="mph-near-match-enabled"> 근접 후보 자동 연결</label>',
+            '  <button id="mph-map-diagnostics-copy" class="mph-btn mph-btn-gray" style="width:100%;padding:8px;font-size:12px;margin-top:6px;">진단 복사</button>',
+            '  <label class="mph-check"><input type="checkbox" id="mph-auto-exclude-failed" checked> 실패 마켓 자동 OFF</label>',
             '  <div class="mph-hint">localhost:5555에 업로드된 엑셀 매칭표를 상품명으로 조회</div>',
             '  <div class="mph-status" id="mph-status-map"></div>',
+            '  <div id="mph-map-diagnostics" class="mph-summary" style="display:none;margin-top:6px;max-height:220px;"></div>',
             '</div>',
             '<div class="mph-section">',
             '  <div class="mph-label">프리셋</div>',
@@ -685,7 +1044,7 @@
         if (!document.getElementById('mph-style')) {
             var style = document.createElement('style');
             style.id = 'mph-style';
-            style.textContent = '#mph-panel{position:fixed;top:12px;right:12px;z-index:999999;width:320px;background:#fff;border:1px solid #d0d7de;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.12);font-family:"Malgun Gothic",sans-serif;font-size:13px;color:#24292f;overflow:hidden}#mph-header{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#2c6fbb;color:#fff;cursor:move;user-select:none}#mph-title{font-weight:700;font-size:13px}#mph-toggle{cursor:pointer;font-size:12px}#mph-body{padding:12px 14px;max-height:80vh;overflow-y:auto}.mph-section{margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid #eaeef2}.mph-section-last{border-bottom:none;margin-bottom:0;padding-bottom:0}.mph-label{font-weight:700;margin-bottom:6px;color:#1f2328;font-size:12px}.mph-product-name{font-size:11px;color:#57606a;padding:4px 0;word-break:break-all}.mph-hint{font-size:10px;color:#8b949e;margin-top:2px}.mph-naver-info{font-size:11px;color:#03c75a;font-weight:700;padding:4px 8px;background:#e8f8ee;border-radius:4px;margin-bottom:6px}.mph-row{display:flex;gap:6px;margin-bottom:6px;align-items:center}.mph-row input[type="text"],.mph-row select{flex:1;padding:5px 8px;border:1px solid #d0d7de;border-radius:5px;font-size:12px;outline:none}.mph-btn{padding:5px 10px;border:none;border-radius:5px;cursor:pointer;font-size:11px;font-weight:600;white-space:nowrap}.mph-btn:hover{opacity:.85}.mph-btn:disabled{opacity:.5;cursor:not-allowed}.mph-btn-blue{background:#2c6fbb;color:#fff}.mph-btn-green{background:#2da44e;color:#fff}.mph-btn-red{background:#cf222e;color:#fff}.mph-btn-gray{background:#6e7781;color:#fff}.mph-btn-naver{background:#03c75a;color:#fff;font-size:12px;font-weight:700}.mph-btn-auto{background:#8250df;color:#fff;font-weight:700;border-radius:6px}.mph-divider{height:1px;background:#eaeef2;margin:8px 0}.mph-status{font-size:11px;color:#57606a;margin-top:4px;min-height:16px}.mph-summary{font-size:11px;color:#57606a;background:#f6f8fa;border-radius:4px;padding:6px 8px;margin-bottom:6px;max-height:150px;overflow-y:auto;line-height:1.5;white-space:pre-wrap}';
+            style.textContent = '#mph-panel{position:fixed;top:12px;right:12px;z-index:999999;width:320px;background:#fff;border:1px solid #d0d7de;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.12);font-family:"Malgun Gothic",sans-serif;font-size:13px;color:#24292f;overflow:hidden}#mph-header{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#2c6fbb;color:#fff;cursor:move;user-select:none}#mph-title{font-weight:700;font-size:13px}#mph-toggle{cursor:pointer;font-size:12px}#mph-body{padding:12px 14px;max-height:80vh;overflow-y:auto}.mph-section{margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid #eaeef2}.mph-section-last{border-bottom:none;margin-bottom:0;padding-bottom:0}.mph-label{font-weight:700;margin-bottom:6px;color:#1f2328;font-size:12px}.mph-product-name{font-size:11px;color:#57606a;padding:4px 0;word-break:break-all}.mph-hint{font-size:10px;color:#8b949e;margin-top:2px}.mph-naver-info{font-size:11px;color:#03c75a;font-weight:700;padding:4px 8px;background:#e8f8ee;border-radius:4px;margin-bottom:6px}.mph-row{display:flex;gap:6px;margin-bottom:6px;align-items:center}.mph-row input[type="text"],.mph-row select{flex:1;padding:5px 8px;border:1px solid #d0d7de;border-radius:5px;font-size:12px;outline:none}.mph-check{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:11px;color:#57606a}.mph-btn{padding:5px 10px;border:none;border-radius:5px;cursor:pointer;font-size:11px;font-weight:600;white-space:nowrap}.mph-btn:hover{opacity:.85}.mph-btn:disabled{opacity:.5;cursor:not-allowed}.mph-btn-blue{background:#2c6fbb;color:#fff}.mph-btn-green{background:#2da44e;color:#fff}.mph-btn-red{background:#cf222e;color:#fff}.mph-btn-gray{background:#6e7781;color:#fff}.mph-btn-naver{background:#03c75a;color:#fff;font-size:12px;font-weight:700}.mph-btn-auto{background:#8250df;color:#fff;font-weight:700;border-radius:6px}.mph-divider{height:1px;background:#eaeef2;margin:8px 0}.mph-status{font-size:11px;color:#57606a;margin-top:4px;min-height:16px}.mph-summary{font-size:11px;color:#57606a;background:#f6f8fa;border-radius:4px;padding:6px 8px;margin-bottom:6px;max-height:150px;overflow-y:auto;line-height:1.5;white-space:pre-wrap}';
             document.head.appendChild(style);
         }
         document.body.appendChild(panel);
@@ -722,6 +1081,13 @@
             uploadCategoryMapFile(input.files && input.files[0]);
         });
         document.getElementById('mph-map-apply').addEventListener('click', function () { applyCategoryMap(false); });
+        document.getElementById('mph-near-match-enabled').addEventListener('change', function () {
+            if (this.checked && pendingAliasCandidate && !nearAliasInProgress) {
+                nearAliasInProgress = true;
+                applyPendingAliasCandidate().then(function () { nearAliasInProgress = false; });
+            }
+        });
+        document.getElementById('mph-map-diagnostics-copy').addEventListener('click', function () { copyCategoryMapDiagnostics(); });
 
         refreshPresetSelect();
         document.getElementById('mph-preset-save').addEventListener('click', function () {
