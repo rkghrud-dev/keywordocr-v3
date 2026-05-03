@@ -2,6 +2,8 @@
 bin/
 obj/
 dist/
+publish/
+_tmp_*/
 *.user
 *.suo
 .vs/

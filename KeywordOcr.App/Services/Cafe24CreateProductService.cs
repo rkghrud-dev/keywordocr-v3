@@ -13,6 +13,9 @@ namespace KeywordOcr.App.Services;
 public sealed class Cafe24CreateProductService
 {
     private static readonly Regex GsCodeRegex = new(@"(GS\d{7}[A-Z0-9]*)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private const int Cafe24ProductNameMaxLength = 100;
+    private const int MarketOptionTextMaxChars = 25;
+    private const int MarketOptionTextMaxBytes = 50;
 
     private readonly Cafe24ConfigStore _configStore;
     private readonly Cafe24ApiClient _apiClient = new();
@@ -87,6 +90,7 @@ public sealed class Cafe24CreateProductService
             var productName = GetValue(row, "상품명");
             var customProductCode = GetValue(row, "자체 상품코드");
             var gsCode = ExtractGsCode(row);
+            var originalGsCode = gsCode;
 
             if (allowedGsCodes is not null && !string.IsNullOrWhiteSpace(gsCode)
                 && !allowedGsCodes.Contains(gsCode))
@@ -95,7 +99,27 @@ public sealed class Cafe24CreateProductService
                 continue;
             }
 
+            var preflight = PrepareCafe24CreateRow(row);
+            row = preflight.Row;
+            productName = GetValue(row, "상품명");
+            customProductCode = GetValue(row, "자체 상품코드");
+            gsCode = ExtractGsCode(row);
+            if (string.IsNullOrWhiteSpace(gsCode))
+                gsCode = originalGsCode;
+
             progress?.Report($"[{index + 1}/{rows.Count}] {productName} 신규등록 준비");
+
+            if (!preflight.CanUpload)
+            {
+                skippedCount += 1;
+                logRows.Add(Cafe24UploadSupport.CreateLogRow(gsCode, status: preflight.Status, error: preflight.Message));
+                progress?.Report($"[{index + 1}/{rows.Count}] {productName} 신규등록 스킵: {preflight.Message}");
+                continue;
+            }
+            if (!string.IsNullOrWhiteSpace(preflight.Message))
+            {
+                progress?.Report($"[{index + 1}/{rows.Count}] 사전보정: {preflight.Message}");
+            }
 
             if (string.IsNullOrWhiteSpace(productName))
             {
@@ -254,6 +278,7 @@ public sealed class Cafe24CreateProductService
             var productName = GetValue(row, "상품명");
             var customProductCode = GetValue(row, "자체 상품코드");
             var gsCode = ExtractGsCode(row);
+            var originalGsCode = gsCode;
 
             if (allowedGsCodes is not null && !string.IsNullOrWhiteSpace(gsCode)
                 && !allowedGsCodes.Contains(gsCode))
@@ -262,7 +287,27 @@ public sealed class Cafe24CreateProductService
                 continue;
             }
 
+            var preflight = PrepareCafe24CreateRow(row);
+            row = preflight.Row;
+            productName = GetValue(row, "상품명");
+            customProductCode = GetValue(row, "자체 상품코드");
+            gsCode = ExtractGsCode(row);
+            if (string.IsNullOrWhiteSpace(gsCode))
+                gsCode = originalGsCode;
+
             progress?.Report($"[B마켓] [{index + 1}/{rows.Count}] {productName} 신규등록 준비");
+
+            if (!preflight.CanUpload)
+            {
+                skippedCount += 1;
+                logRows.Add(Cafe24UploadSupport.CreateLogRow(gsCode, status: preflight.Status, error: preflight.Message));
+                progress?.Report($"[B마켓] [{index + 1}/{rows.Count}] {productName} 신규등록 스킵: {preflight.Message}");
+                continue;
+            }
+            if (!string.IsNullOrWhiteSpace(preflight.Message))
+            {
+                progress?.Report($"[B마켓] [{index + 1}/{rows.Count}] 사전보정: {preflight.Message}");
+            }
 
             if (string.IsNullOrWhiteSpace(productName))
             {
@@ -420,6 +465,84 @@ public sealed class Cafe24CreateProductService
         return $"IMAGE_OK:{1 + additionalImagePaths.Count}";
     }
 
+    private static Cafe24CreatePreflightResult PrepareCafe24CreateRow(IReadOnlyDictionary<string, string> sourceRow)
+    {
+        var row = sourceRow.ToDictionary(pair => pair.Key, pair => pair.Value ?? string.Empty, StringComparer.Ordinal);
+        var fixedMessages = new List<string>();
+        var blockMessages = new List<string>();
+
+        var productName = NormalizeSpaces(GetValue(row, "상품명"));
+        if (!string.IsNullOrWhiteSpace(productName))
+        {
+            var withoutGsCode = NormalizeSpaces(GsCodeRegex.Replace(productName, ""));
+            if (!string.IsNullOrWhiteSpace(withoutGsCode) && !string.Equals(withoutGsCode, productName, StringComparison.Ordinal))
+            {
+                productName = withoutGsCode;
+                fixedMessages.Add("상품명 GS코드 제거");
+            }
+
+            if (productName.Length > Cafe24ProductNameMaxLength)
+            {
+                productName = TrimProductName(productName, Cafe24ProductNameMaxLength);
+                fixedMessages.Add($"상품명 {Cafe24ProductNameMaxLength}자 이하로 자동 축약");
+            }
+
+            row["상품명"] = productName;
+        }
+
+        var optionInput = GetValue(row, "옵션입력");
+        var optionValues = ParseOptionInput(optionInput);
+        var optionUse = ToCafe24Flag(GetValue(row, "옵션사용"), "F");
+        var optionAdditionals = ParseOptionAdditionals(GetValue(row, "옵션추가금"));
+
+        if (optionValues.Count > 0 && optionUse != "T")
+        {
+            row["옵션사용"] = "T";
+            optionUse = "T";
+            fixedMessages.Add("옵션입력 감지: 옵션사용=T 자동 보정");
+        }
+
+        if (optionUse == "T" && optionValues.Count == 0)
+        {
+            blockMessages.Add("옵션사용=T인데 옵션입력이 비어 있습니다.");
+        }
+
+        if (optionAdditionals.Count > 0 && optionValues.Count == 0)
+        {
+            blockMessages.Add("옵션추가금이 있지만 옵션입력이 비어 있습니다.");
+        }
+
+        if (optionValues.Count > 200)
+        {
+            blockMessages.Add($"옵션 품목 수 {optionValues.Count}개: Cafe24/마켓플러스 상한 200개 초과");
+        }
+
+        var longOption = optionValues.FirstOrDefault(ExceedsMarketOptionTextLimit);
+        if (!string.IsNullOrWhiteSpace(longOption))
+        {
+            blockMessages.Add($"옵션값 길이 초과 위험: {ShortText(longOption, 32)}");
+        }
+
+        if (optionValues.Count > 0 && optionAdditionals.Count > 0)
+        {
+            if (optionValues.Count != optionAdditionals.Count)
+            {
+                blockMessages.Add($"옵션 수({optionValues.Count})와 옵션추가금 수({optionAdditionals.Count})가 다릅니다.");
+            }
+            else if (optionAdditionals.All(amount => amount != 0m))
+            {
+                blockMessages.Add("추가금 0원 기준 옵션이 없습니다.");
+            }
+        }
+
+        if (blockMessages.Count > 0)
+        {
+            return new Cafe24CreatePreflightResult(row, false, "SKIP_PREFLIGHT", string.Join(" ", blockMessages));
+        }
+
+        return new Cafe24CreatePreflightResult(row, true, "OK", string.Join(" ", fixedMessages));
+    }
+
     private static Dictionary<string, object?> BuildCreateRequest(IReadOnlyDictionary<string, string> row)
     {
         var request = new Dictionary<string, object?>(StringComparer.Ordinal)
@@ -491,6 +614,22 @@ public sealed class Cafe24CreateProductService
         }
 
         return request;
+    }
+
+    private sealed class Cafe24CreatePreflightResult
+    {
+        public Cafe24CreatePreflightResult(Dictionary<string, string> row, bool canUpload, string status, string message)
+        {
+            Row = row;
+            CanUpload = canUpload;
+            Status = status;
+            Message = message;
+        }
+
+        public Dictionary<string, string> Row { get; }
+        public bool CanUpload { get; }
+        public string Status { get; }
+        public string Message { get; }
     }
 
     private static List<Dictionary<string, string>> ReadRows(
@@ -684,6 +823,53 @@ public sealed class Cafe24CreateProductService
         }
 
         return result;
+    }
+
+    private static List<decimal> ParseOptionAdditionals(string optionAdditionals)
+    {
+        if (string.IsNullOrWhiteSpace(optionAdditionals))
+            return new List<decimal>();
+
+        return optionAdditionals
+            .Split('|', StringSplitOptions.RemoveEmptyEntries)
+            .Select(value => ParseDecimal(value.Trim(), 0m))
+            .ToList();
+    }
+
+    private static bool ExceedsMarketOptionTextLimit(string value)
+    {
+        var text = NormalizeSpaces(value);
+        return text.Length > MarketOptionTextMaxChars || GetMarketByteCount(text) > MarketOptionTextMaxBytes;
+    }
+
+    private static int GetMarketByteCount(string value)
+    {
+        var bytes = 0;
+        foreach (var ch in value)
+            bytes += ch <= 0x7F ? 1 : 2;
+        return bytes;
+    }
+
+    private static string TrimProductName(string value, int maxLength)
+    {
+        var text = NormalizeSpaces(value);
+        if (text.Length <= maxLength)
+            return text;
+
+        var cut = text[..maxLength].Trim();
+        var lastSpace = cut.LastIndexOf(' ');
+        if (lastSpace >= Math.Min(60, maxLength - 1))
+            cut = cut[..lastSpace].Trim();
+        return cut;
+    }
+
+    private static string NormalizeSpaces(string value)
+        => Regex.Replace(value.Trim(), @"\s+", " ");
+
+    private static string ShortText(string value, int maxLength)
+    {
+        var text = NormalizeSpaces(value);
+        return text.Length <= maxLength ? text : text[..maxLength].Trim() + "...";
     }
 
     private static string GetValue(IReadOnlyDictionary<string, string> row, string key)

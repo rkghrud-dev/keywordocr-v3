@@ -11,15 +11,18 @@
     <PublishSingleFile>true</PublishSingleFile>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <ApplicationIcon>Assets\leo-ash.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="BCrypt.Net-Next" Version="4.1.0" />
     <PackageReference Include="ClosedXML" Version="0.104.2" />
   </ItemGroup>
   <ItemGroup>
+    <Resource Include="Assets\leo-ash.ico" />
     <Content Include="Bridge\**\*.*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\backend\app\**\*.*" LinkBase="backend\app" CopyToPublishDirectory="PreserveNewest" Exclude="..\backend\**\__pycache__\**;..\backend\**\*.pyc;..\backend\**\*.pyo" />
     <Content Include="..\backend\data\**\*.*" LinkBase="backend\data" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\backend\prompts\**\*.*" LinkBase="backend\prompts" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\tools\marketplus-category-helper\**\*.*" LinkBase="tools\marketplus-category-helper" CopyToPublishDirectory="PreserveNewest" Exclude="..\tools\marketplus-category-helper\marketplus_category_map_store.json;..\tools\marketplus-category-helper\**\__pycache__\**;..\tools\marketplus-category-helper\**\*.pyc;..\tools\marketplus-category-helper\**\*.pyo" />
   </ItemGroup>
 </Project>
