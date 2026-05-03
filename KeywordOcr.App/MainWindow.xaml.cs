@@ -87,6 +87,15 @@ public partial class MainWindow : Window
 
         Log("KeywordOCR v3 시작");
         Log($"Python 루트: {_pythonRoot}");
+        LogReleaseNotes();
+    }
+
+    private void LogReleaseNotes()
+    {
+        Log("변경사항 LOG (2026-05-04)");
+        Log("  - B마켓 로고 파일 선택 시 즉시 설정 저장");
+        Log("  - 앱 종료 시 초기세팅 값을 자동 저장해서 재실행 후에도 유지");
+        Log("  - 설치 후 프로그램 로그에 변경사항 표시");
     }
 
     private void ApplyDefaultWorkflowSelections()
@@ -3004,14 +3013,20 @@ public partial class MainWindow : Window
     {
         var dlg = new OpenFileDialog { Filter = "이미지|*.png;*.jpg;*.jpeg|모든 파일|*.*", Title = "로고 파일 선택" };
         if (dlg.ShowDialog() == true)
+        {
             SettingsLogoPath.Text = dlg.FileName;
+            BuildListingSettings();
+        }
     }
 
     private void BrowseLogoPathB_Click(object sender, RoutedEventArgs e)
     {
         var dlg = new OpenFileDialog { Filter = "이미지|*.png;*.jpg;*.jpeg|모든 파일|*.*", Title = "B마켓 로고 파일 선택" };
         if (dlg.ShowDialog() == true)
+        {
             SettingsLogoPathB.Text = dlg.FileName;
+            BuildListingSettings();
+        }
     }
 
     private void BrowseTokenPath_Click(object sender, RoutedEventArgs e)
@@ -3632,6 +3647,7 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        BuildListingSettings();
         _cts?.Cancel();
         base.OnClosed(e);
     }
